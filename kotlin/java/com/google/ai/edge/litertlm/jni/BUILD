@@ -38,6 +38,8 @@ cc_binary(
         "//runtime/components:prompt_template",
         "//runtime/conversation",
         "//runtime/conversation:io_types",
+        "//runtime/conversation/model_data_processor:config_registry",
+        "//runtime/conversation/model_data_processor:gemma4_data_processor_config",
         "//runtime/engine:engine_factory",
         "//runtime/engine:engine_interface",
         "//runtime/engine:engine_settings",
