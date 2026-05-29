@@ -81,8 +81,9 @@ pytype_strict_library(
     srcs = ["common.py"],
     deps = [
         requirement("click"),
-        requirement("huggingface_hub"),
-    ],
+    ] + select({
+        "//conditions:default": [requirement("huggingface_hub")],
+    }),
     imports = [".."],
 )
 

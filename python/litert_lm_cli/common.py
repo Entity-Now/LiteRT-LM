@@ -139,8 +139,8 @@ def download_from_huggingface(repo_id, filename, token):
   """
   try:
     # pylint: disable=g-import-not-at-top
-    from huggingface_hub import get_token
-    from huggingface_hub import hf_hub_download
+    from huggingface_hub import get_token  # pytype: disable=import-error
+    from huggingface_hub import hf_hub_download  # pytype: disable=import-error
   except ImportError:
     click.echo(
         click.style(
