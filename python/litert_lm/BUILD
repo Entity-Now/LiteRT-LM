@@ -433,6 +433,7 @@ py_wheel(
         "//conditions:default": "any",
     }),
     python_tag = "py3",
+    python_requires = ">=3.10",
     summary = "LiteRT-LM inference library",
     license = "Apache-2.0",
     description_file = "README.md",

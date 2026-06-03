@@ -205,6 +205,7 @@ py_wheel(
     }),
     platform = "any",
     python_tag = "py3",
+    python_requires = ">=3.10",
     summary = "LiteRT-LM command line tool",
     description_file = "README.md",
     license = "Apache-2.0",

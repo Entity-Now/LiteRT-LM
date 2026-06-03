@@ -229,6 +229,7 @@ py_wheel(
     }),
     platform = "any",
     python_tag = "py3",
+    python_requires = ">=3.10",
     summary = "Python tools for building and inspecting LiteRT-LM file formats",
     description_file = "README.md",
     license = "Apache-2.0",
