@@ -39,8 +39,25 @@ jobs:
       - name: Setup Bazel
         uses: bazel-contrib/setup-bazel@0.8.1
 
+      - name: Create Mock Android repositories for Windows
+        if: matrix.platform == 'windows'
+        run: |
+          mkdir -p csharp/empty_ndk
+          echo "" > csharp/empty_ndk/WORKSPACE
+          echo "" > csharp/empty_ndk/BUILD
+          mkdir -p csharp/empty_sdk
+          echo "" > csharp/empty_sdk/WORKSPACE
+          echo "" > csharp/empty_sdk/BUILD
+        shell: bash
+
       - name: Build Shared Library via Bazel
-        run: bazel build //csharp:CLiteRTLM
+        run: |
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            bazel build --override_repository=androidndk=csharp/empty_ndk --override_repository=androidsdk=csharp/empty_sdk //csharp:CLiteRTLM
+          else
+            bazel build //csharp:CLiteRTLM
+          fi
+        shell: bash
 
       - name: Upload Native Binary
         uses: actions/upload-artifact@v4
