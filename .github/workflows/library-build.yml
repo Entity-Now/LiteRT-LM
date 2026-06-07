@@ -52,7 +52,7 @@ jobs:
           # 1. 创建输出目录
           New-Item -ItemType Directory -Force -Path dist_bin
 
-          # 2. 绕过软链接，直接去实际的编译输出缓存目录中搜索打包好的 dll 和 lib
+          # 2. 深度遍历检索通过 DEF 强行导出的 dll 和对应生成的 lib 导入库
           Write-Host "正在检索 Windows 编译产物..."
           $dllFile = Get-ChildItem -Path "bazel-out\" -Filter "litert_lm.dll" -Recurse | Select-Object -First 1
           $libFile = Get-ChildItem -Path "bazel-out\" -Filter "*litert_lm*.lib" -Recurse | Select-Object -First 1
@@ -65,7 +65,7 @@ jobs:
           Write-Host "成功找到 DLL: $($dllFile.FullName)"
           if ($null -ne $libFile) { Write-Host "成功找到 LIB: $($libFile.FullName)" }
 
-          # 3. 复制到打包目录 (顺便把官方的 c/engine.h 顺过去，方便调用者对照接口)
+          # 3. 复制到打包目录，附带官方 C API 头文件并重命名增强可读性
           Copy-Item -Path $dllFile.FullName -Destination "dist_bin\litert_lm.dll" -Force
           if ($null -ne $libFile) {
               Copy-Item -Path $libFile.FullName -Destination "dist_bin\litert_lm.lib" -Force
@@ -136,16 +136,17 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           name: LiteRT-LM Official Dynamic Libraries (${{ env.RELEASE_TAG }})
           body: |
-            ## 📦 自动化跨平台动态库编译产物 (基于官方 c/engine.cc 包装)
+            ## 📦 自动化跨平台动态库编译产物 (基于官方稳定 C API 封装)
             
-            内部已静态内嵌全套 LiteRT Runtime 及依赖项，外部提供干净的纯 C 导出接口。
+            内部已静态内嵌全套 LiteRT 大模型推理 Runtime 及相关底层算子。
             
-            ### 🛠 包含架构：
-            - **Windows (x86_64)**: `litert_lm.dll` & `litert_lm.lib`
-            - **macOS Intel (x86_64)**: `liblitert_lm.dylib`
-            - **macOS Apple Silicon (ARM64)**: `liblitert_lm.dylib`
+            ### 🛠 包含架构与产物清单：
+            - **Windows (x86_64)**: `litert_lm.dll` (动态链接库) & `litert_lm.lib` (MSVC 导入库)
+            - **macOS Intel (x86_64)**: `liblitert_lm.dylib` (适用于 Intel 芯片 Mac)
+            - **macOS Apple Silicon (ARM64)**: `liblitert_lm.dylib` (适用于 M1/M2/M3/M5 芯片 Mac)
             
-            使用时请直接参考压缩包内的 `litert_lm_engine.h` (即官方的 `c/engine.h`) 进行函数调用。
+            ### 💡 调用方式：
+            各平台压缩包内均附带了 `litert_lm_engine.h`。外部调用直接包含该头文件，并通过原生 C 符号（如 `litert_lm_engine_create`）无缝操纵模型即可。
           draft: false
           prerelease: false
           files: |
