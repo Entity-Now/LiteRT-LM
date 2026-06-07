@@ -1,12 +1,20 @@
 package(default_visibility = ["//visibility:public"])
 
-# 这个目标会作为你的 Windows (.dll) 和 macOS (.dylib) 的专属生成器
+# 专门为 Windows 准备的导出配置，强行把官方 c/engine.h 里的函数导出来
+outputs = select({
+    "@bazel_tools//src/conditions:windows": ["/DEF:$(location :litert_lm.def)"],
+    "//conditions:default": [],
+})
+
 cc_binary(
     name = "litert_lm",
-    linkshared = True, # 关键：强行让 Bazel 把官方的静态组件融合成动态链接库
-    defines = ["LITERT_BUILD_DLL"],
+    srcs = [
+        "win_dummy.cc",
+        "litert_lm.def",
+    ],
+    linkopts = outputs,
+    linkshared = True, # 强制生成动态库
     deps = [
-        # 直接拉取官方在 c 目录下维护的成熟稳定的静态库目标
-        "//c:engine", 
+        "//c:engine", # 官方底座
     ],
 )
