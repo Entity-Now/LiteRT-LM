@@ -7,7 +7,7 @@ on:
   workflow_dispatch: # 允许你在 GitHub 页面上手动点击按钮触发
 
 permissions:
-  contents: write # 赋予 Action 创建和写入 Release 的权限
+  contents: write # 开启写入 Release 的权限
 
 jobs:
   build:
@@ -44,7 +44,7 @@ jobs:
         run: |
           bazel build //litert_c_api:litert_lm --compilation_mode=opt
 
-      # --- Windows 平台打包 (已修复快捷方式访问失败问题) ---
+      # --- Windows 平台打包 ---
       - name: Package Artifacts (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
@@ -52,12 +52,11 @@ jobs:
           # 1. 创建输出目录
           New-Item -ItemType Directory -Force -Path dist_bin
 
-          # 2. 绕过 bazel-bin 软链接，直接去实际的编译输出缓存目录中搜索 dll 和 lib
+          # 2. 绕过软链接，直接去实际的编译输出缓存目录中搜索打包好的 dll 和 lib
           Write-Host "正在检索 Windows 编译产物..."
           $dllFile = Get-ChildItem -Path "bazel-out\" -Filter "litert_lm.dll" -Recurse | Select-Object -First 1
           $libFile = Get-ChildItem -Path "bazel-out\" -Filter "*litert_lm*.lib" -Recurse | Select-Object -First 1
 
-          # 3. 检查文件是否存在
           if ($null -eq $dllFile) {
               Write-Error "错误：未能在 bazel-out 中找到 litert_lm.dll，请检查上一步的编译日志。"
               exit 1
@@ -66,17 +65,17 @@ jobs:
           Write-Host "成功找到 DLL: $($dllFile.FullName)"
           if ($null -ne $libFile) { Write-Host "成功找到 LIB: $($libFile.FullName)" }
 
-          # 4. 复制到打包目录
+          # 3. 复制到打包目录 (顺便把官方的 c/engine.h 顺过去，方便调用者对照接口)
           Copy-Item -Path $dllFile.FullName -Destination "dist_bin\litert_lm.dll" -Force
           if ($null -ne $libFile) {
               Copy-Item -Path $libFile.FullName -Destination "dist_bin\litert_lm.lib" -Force
           }
-          Copy-Item -Path "litert_c_api\litert_lm_api.h" -Destination "dist_bin\litert_lm_api.h" -Force
+          Copy-Item -Path "c\engine.h" -Destination "dist_bin\litert_lm_engine.h" -Force
 
-          # 5. 使用 Windows 原生 tar 打包
+          # 4. 使用 Windows 原生 tar 打包
           tar -a -c -f ${{ matrix.output-name }} dist_bin
 
-      # --- macOS 平台打包 (同步优化路径检索机制) ---
+      # --- macOS 平台打包 ---
       - name: Package Artifacts (macOS)
         if: startsWith(matrix.os, 'macos')
         run: |
@@ -93,8 +92,9 @@ jobs:
           
           echo "成功找到 dylib: $DYLIB_PATH"
           
+          # 复制到打包目录并附带官方的 C 接口头文件
           cp "$DYLIB_PATH" dist_bin/liblitert_lm.dylib
-          cp litert_c_api/litert_lm_api.h dist_bin/litert_lm_api.h
+          cp c/engine.h dist_bin/litert_lm_engine.h
           zip -r ${{ matrix.output-name }} dist_bin
 
       # --- 暂存编译好的压缩包，供下方的 release 任务调用 ---
@@ -134,12 +134,18 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: LiteRT-LM Dynamic Libraries (${{ env.RELEASE_TAG }})
+          name: LiteRT-LM Official Dynamic Libraries (${{ env.RELEASE_TAG }})
           body: |
-            Automated cross-platform compiled binary release for LiteRT-LM.
+            ## 📦 自动化跨平台动态库编译产物 (基于官方 c/engine.cc 包装)
+            
+            内部已静态内嵌全套 LiteRT Runtime 及依赖项，外部提供干净的纯 C 导出接口。
+            
+            ### 🛠 包含架构：
             - **Windows (x86_64)**: `litert_lm.dll` & `litert_lm.lib`
             - **macOS Intel (x86_64)**: `liblitert_lm.dylib`
             - **macOS Apple Silicon (ARM64)**: `liblitert_lm.dylib`
+            
+            使用时请直接参考压缩包内的 `litert_lm_engine.h` (即官方的 `c/engine.h`) 进行函数调用。
           draft: false
           prerelease: false
           files: |
