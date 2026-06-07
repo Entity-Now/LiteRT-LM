@@ -1,0 +1,5 @@
+LIBRARY litert_lm
+EXPORTS
+    LiteRtEngineCreate
+    LiteRtEngineInference
+    LiteRtEngineDestroy
