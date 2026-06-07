@@ -51,6 +51,8 @@ jobs:
         shell: bash
 
       - name: Build Shared Library via Bazel
+        env:
+          MSYS_NO_PATHCONV: 1
         run: |
           if [ "${{ matrix.platform }}" = "windows" ]; then
             bazel build --override_repository=androidndk=csharp/empty_ndk --override_repository=androidsdk=csharp/empty_sdk //csharp:CLiteRTLM
