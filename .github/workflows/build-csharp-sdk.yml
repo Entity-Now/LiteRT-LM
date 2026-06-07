@@ -1,0 +1,129 @@
+name: Build C# SDK and Native Libraries
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-native:
+    name: Build Native (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            output: bazel-bin/csharp/libCLiteRTLM.so
+            artifact-name: libCLiteRTLM.so
+          - os: macos-latest
+            platform: macos
+            output: bazel-bin/csharp/libCLiteRTLM.dylib
+            artifact-name: libCLiteRTLM.dylib
+          - os: windows-latest
+            platform: windows
+            output: bazel-bin/csharp/CLiteRTLM.dll
+            artifact-name: CLiteRTLM.dll
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Bazel
+        uses: bazelbuild/setup-bazelisk@v2
+
+      - name: Build Shared Library via Bazel
+        run: bazel build //csharp:CLiteRTLM
+
+      - name: Upload Native Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.platform }}
+          path: ${{ matrix.output }}
+
+  build-csharp:
+    name: Build C# Wrapper
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore NuGet Packages
+        run: dotnet restore csharp/LiteRTLM.Core.csproj
+
+      - name: Build C# Class Library
+        run: dotnet build csharp/LiteRTLM.Core.csproj -c Release --no-restore
+
+      - name: Upload C# Assembly
+        uses: actions/upload-artifact@v4
+        with:
+          name: csharp-dll
+          path: csharp/bin/Release/netstandard2.0/LiteRTLM.Core.dll
+
+  package:
+    name: Package SDK
+    needs: [build-native, build-csharp]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create Package Directory
+        run: |
+          mkdir -p package/lib
+          mkdir -p package/runtimes/osx/native
+          mkdir -p package/runtimes/linux-x64/native
+          mkdir -p package/runtimes/win-x64/native
+
+      - name: Download C# DLL
+        uses: actions/download-artifact@v4
+        with:
+          name: csharp-dll
+          path: package/lib
+
+      - name: Download macOS Dylib
+        uses: actions/download-artifact@v4
+        with:
+          name: native-macos
+          path: package/runtimes/osx/native
+
+      - name: Download Linux Shared Lib
+        uses: actions/download-artifact@v4
+        with:
+          name: native-linux
+          path: package/runtimes/linux-x64/native
+
+      - name: Download Windows DLL
+        uses: actions/download-artifact@v4
+        with:
+          name: native-windows
+          path: package/runtimes/win-x64/native
+
+      - name: Create Multi-Platform Zip
+        run: |
+          zip -r LiteRTLM_CSharp_SDK.zip package/
+
+      - name: Upload Final SDK Release Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiteRTLM_CSharp_SDK
+          path: LiteRTLM_CSharp_SDK.zip
+
+      - name: Create or Update Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: LiteRTLM_CSharp_SDK.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

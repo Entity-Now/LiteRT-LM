@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <LangVersion>8.0</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+    <PackageReference Include="System.Threading.Channels" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Auto-copy native library built by Bazel if it exists in the bin directory -->
+    <None Condition="Exists('..\bazel-bin\csharp\libCLiteRTLM.dylib')" Include="..\bazel-bin\csharp\libCLiteRTLM.dylib" CopyToOutputDirectory="PreserveNewest" Link="libCLiteRTLM.dylib" />
+    <None Condition="Exists('..\bazel-bin\csharp\libCLiteRTLM.so')" Include="..\bazel-bin\csharp\libCLiteRTLM.so" CopyToOutputDirectory="PreserveNewest" Link="libCLiteRTLM.so" />
+    <None Condition="Exists('..\bazel-bin\csharp\libCLiteRTLM.dll')" Include="..\bazel-bin\csharp\libCLiteRTLM.dll" CopyToOutputDirectory="PreserveNewest" Link="CLiteRTLM.dll" />
+  </ItemGroup>
+</Project>
