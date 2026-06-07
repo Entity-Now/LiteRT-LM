@@ -1,20 +1,22 @@
 package(default_visibility = ["//visibility:public"])
 
-# 针对 Windows 进行特定配置，Mac 则自动跳过 DEF
-outputs = select({
-    "@bazel_tools//src/conditions:windows": ["/DEF:$(location :litert_lm.def)"],
-    "//conditions:default": [],
-})
-
 cc_binary(
     name = "litert_lm",
-    srcs = [
-        "win_dummy.cc",
-        "litert_lm.def",
-    ],
-    linkopts = outputs,
-    linkshared = True,
+    srcs = ["win_dummy.cc"],
     deps = [
-        "//c:engine", 
+        "//c:engine",
     ],
+    linkshared = True,
+
+    # ==================== Windows 专属配置 ====================
+    win_def_file = select({
+        "@platforms//os:windows": "litert_lm.def",
+        "//conditions:default": None,
+    }),
+
+    # 如果你还想额外传递 link 选项（可选）
+    linkopts = select({
+        "@platforms//os:windows": [],
+        "//conditions:default": [],
+    }),
 )
