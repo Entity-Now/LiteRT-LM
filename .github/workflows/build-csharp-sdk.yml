@@ -37,7 +37,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Bazel
-        uses: bazelbuild/setup-bazelisk@v2
+        uses: bazel-contrib/setup-bazel@v0.9.0
 
       - name: Build Shared Library via Bazel
         run: bazel build //csharp:CLiteRTLM
