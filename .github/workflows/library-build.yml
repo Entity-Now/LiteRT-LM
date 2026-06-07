@@ -1,0 +1,119 @@
+name: Build and Release LiteRT-LM Cross-Platform Shared Libraries
+
+on:
+  push:
+    tags:
+      - 'v*' # 当你推送形如 v1.0.0 的 tag 时自动触发
+  workflow_dispatch: # 允许你在 GitHub 页面上手动点击按钮触发
+
+permissions:
+  contents: write # 赋予 Action 创建和写入 Release 的权限
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform-name: windows
+            artifact-path: bazel-bin/litert_c_api/litert_lm.dll
+            import-lib-path: bazel-bin/litert_c_api/litert_lm.dll.ifso.lib
+            output-name: litert_lm_windows.zip
+          - os: macos-13 # 使用 Intel 芯片 Mac 
+            platform-name: macos-x86_64
+            artifact-path: bazel-bin/litert_c_api/liblitert_lm.dylib
+            output-name: litert_lm_macos_x86_64.zip
+          - os: macos-latest # 使用 Apple Silicon (M1/M2/M3) 芯片 Mac
+            platform-name: macos-arm64
+            artifact-path: bazel-bin/litert_c_api/liblitert_lm.dylib
+            output-name: litert_lm_macos_arm64.zip
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Bazel (Bazelisk)
+        uses: bazelbuild/setup-bazelisk@v3
+
+      # --- Windows 平台的特定设置 ---
+      - name: Set up MSVC (Windows only)
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # --- 核心编译步骤 ---
+      - name: Compile Library with Bazel
+        run: |
+          bazel build //litert_c_api:litert_lm --compilation_mode=opt
+
+      # --- Windows 平台打包 ---
+      - name: Package Artifacts (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          mkdir dist_bin
+          copy "${{ matrix.artifact-path }}" dist_bin\litert_lm.dll
+          copy "${{ matrix.import-lib-path }}" dist_bin\litert_lm.lib
+          copy litert_c_api\litert_lm_api.h dist_bin\litert_lm_api.h
+          tar -a -c -f ${{ matrix.output-name }} dist_bin\*
+
+      # --- macOS 平台打包 ---
+      - name: Package Artifacts (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          mkdir dist_bin
+          cp ${{ matrix.artifact-path }} dist_bin/liblitert_lm.dylib
+          cp litert_c_api/litert_lm_api.h dist_bin/litert_lm_api.h
+          zip -r ${{ matrix.output-name }} dist_bin
+
+      # --- 暂存编译好的压缩包，供下方的 release 任务调用 ---
+      - name: Upload Intermediary Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output-name }}
+          path: ${{ matrix.output-name }}
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 下载前面所有矩阵任务生成的压缩包
+      - name: Download All Artifacts
+        uses: actions/actions-downloader@v2
+        with:
+          name: 'litert_lm_*'
+          path: './downloads'
+        continue-on-error: true # 容错处理
+
+      # 如果是通过手动触发(workflow_dispatch)，生成一个伪 tag 用于发布
+      - name: Set Env for Manual Trigger
+        if: github.event_name == 'workflow_dispatch'
+        run: echo "RELEASE_TAG=manual-build-${{ github.run_number }}" >> $GITHUB_ENV
+
+      # 如果是通过推送 Tag 触发
+      - name: Set Env for Tag Trigger
+        if: github.event_name == 'push'
+        run: echo "RELEASE_TAG=${{ github.ref_name }}" >> $GITHUB_ENV
+
+      # 自动创建 Release 并上传这三个架构的压缩包
+      - name: Generate GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: LiteRT-LM Dynamic Libraries (${{ env.RELEASE_TAG }})
+          body: |
+            Automated cross-platform compiled binary release for LiteRT-LM.
+            - Windows (x86_64) `.dll` & `.lib`
+            - macOS Intel (x86_64) `.dylib`
+            - macOS Apple Silicon (ARM64) `.dylib`
+          draft: false
+          prerelease: false
+          files: |
+            ./downloads/litert_lm_windows.zip/litert_lm_windows.zip
+            ./downloads/litert_lm_macos_x86_64.zip/litert_lm_macos_x86_64.zip
+            ./downloads/litert_lm_macos_arm64.zip/litert_lm_macos_arm64.zip
