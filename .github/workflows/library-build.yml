@@ -19,16 +19,12 @@ jobs:
         include:
           - os: windows-latest
             platform-name: windows
-            artifact-path: bazel-bin/litert_c_api/litert_lm.dll
-            import-lib-path: bazel-bin/litert_c_api/litert_lm.dll.ifso.lib
             output-name: litert_lm_windows.zip
-          - os: macos-13 # 使用 Intel 芯片 Mac 
+          - os: macos-13 # Intel 芯片 Mac
             platform-name: macos-x86_64
-            artifact-path: bazel-bin/litert_c_api/liblitert_lm.dylib
             output-name: litert_lm_macos_x86_64.zip
-          - os: macos-latest # 使用 Apple Silicon (M1/M2/M3) 芯片 Mac
+          - os: macos-latest # Apple Silicon (M1/M2/M3) 芯片 Mac
             platform-name: macos-arm64
-            artifact-path: bazel-bin/litert_c_api/liblitert_lm.dylib
             output-name: litert_lm_macos_arm64.zip
 
     steps:
@@ -48,22 +44,56 @@ jobs:
         run: |
           bazel build //litert_c_api:litert_lm --compilation_mode=opt
 
-      # --- Windows 平台打包 ---
+      # --- Windows 平台打包 (已修复快捷方式访问失败问题) ---
       - name: Package Artifacts (Windows)
         if: matrix.os == 'windows-latest'
+        shell: pwsh
         run: |
-          mkdir dist_bin
-          copy "${{ matrix.artifact-path }}" dist_bin\litert_lm.dll
-          copy "${{ matrix.import-lib-path }}" dist_bin\litert_lm.lib
-          copy litert_c_api\litert_lm_api.h dist_bin\litert_lm_api.h
-          tar -a -c -f ${{ matrix.output-name }} dist_bin\*
+          # 1. 创建输出目录
+          New-Item -ItemType Directory -Force -Path dist_bin
 
-      # --- macOS 平台打包 ---
+          # 2. 绕过 bazel-bin 软链接，直接去实际的编译输出缓存目录中搜索 dll 和 lib
+          Write-Host "正在检索 Windows 编译产物..."
+          $dllFile = Get-ChildItem -Path "bazel-out\" -Filter "litert_lm.dll" -Recurse | Select-Object -First 1
+          $libFile = Get-ChildItem -Path "bazel-out\" -Filter "*litert_lm*.lib" -Recurse | Select-Object -First 1
+
+          # 3. 检查文件是否存在
+          if ($null -eq $dllFile) {
+              Write-Error "错误：未能在 bazel-out 中找到 litert_lm.dll，请检查上一步的编译日志。"
+              exit 1
+          }
+
+          Write-Host "成功找到 DLL: $($dllFile.FullName)"
+          if ($null -ne $libFile) { Write-Host "成功找到 LIB: $($libFile.FullName)" }
+
+          # 4. 复制到打包目录
+          Copy-Item -Path $dllFile.FullName -Destination "dist_bin\litert_lm.dll" -Force
+          if ($null -ne $libFile) {
+              Copy-Item -Path $libFile.FullName -Destination "dist_bin\litert_lm.lib" -Force
+          }
+          Copy-Item -Path "litert_c_api\litert_lm_api.h" -Destination "dist_bin\litert_lm_api.h" -Force
+
+          # 5. 使用 Windows 原生 tar 打包
+          tar -a -c -f ${{ matrix.output-name }} dist_bin
+
+      # --- macOS 平台打包 (同步优化路径检索机制) ---
       - name: Package Artifacts (macOS)
         if: startsWith(matrix.os, 'macos')
         run: |
-          mkdir dist_bin
-          cp ${{ matrix.artifact-path }} dist_bin/liblitert_lm.dylib
+          mkdir -p dist_bin
+          
+          echo "正在检索 macOS 编译产物..."
+          # 使用 find 命令安全地查找实际生成的 dylib
+          DYLIB_PATH=$(find bazel-out/ -name "liblitert_lm.dylib" | head -n 1)
+          
+          if [ -z "$DYLIB_PATH" ]; then
+              echo "错误：未能找到 liblitert_lm.dylib，编译可能失败了。"
+              exit 1
+          fi
+          
+          echo "成功找到 dylib: $DYLIB_PATH"
+          
+          cp "$DYLIB_PATH" dist_bin/liblitert_lm.dylib
           cp litert_c_api/litert_lm_api.h dist_bin/litert_lm_api.h
           zip -r ${{ matrix.output-name }} dist_bin
 
@@ -84,13 +114,12 @@ jobs:
 
       # 下载前面所有矩阵任务生成的压缩包
       - name: Download All Artifacts
-        uses: actions/actions-downloader@v2
+        uses: actions/download-artifact@v4
         with:
-          name: 'litert_lm_*'
+          pattern: 'litert_lm_*'
           path: './downloads'
-        continue-on-error: true # 容错处理
 
-      # 如果是通过手动触发(workflow_dispatch)，生成一个伪 tag 用于发布
+      # 如果是通过手动触发(workflow_dispatch)，生成一个带有运行编号的伪 tag 用于发布
       - name: Set Env for Manual Trigger
         if: github.event_name == 'workflow_dispatch'
         run: echo "RELEASE_TAG=manual-build-${{ github.run_number }}" >> $GITHUB_ENV
@@ -108,9 +137,9 @@ jobs:
           name: LiteRT-LM Dynamic Libraries (${{ env.RELEASE_TAG }})
           body: |
             Automated cross-platform compiled binary release for LiteRT-LM.
-            - Windows (x86_64) `.dll` & `.lib`
-            - macOS Intel (x86_64) `.dylib`
-            - macOS Apple Silicon (ARM64) `.dylib`
+            - **Windows (x86_64)**: `litert_lm.dll` & `litert_lm.lib`
+            - **macOS Intel (x86_64)**: `liblitert_lm.dylib`
+            - **macOS Apple Silicon (ARM64)**: `liblitert_lm.dylib`
           draft: false
           prerelease: false
           files: |
