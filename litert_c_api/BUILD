@@ -1,6 +1,6 @@
 package(default_visibility = ["//visibility:public"])
 
-# 专门为 Windows 准备的导出配置，强行把官方 c/engine.h 里的函数导出来
+# 针对 Windows 进行特定配置，Mac 则自动跳过 DEF
 outputs = select({
     "@bazel_tools//src/conditions:windows": ["/DEF:$(location :litert_lm.def)"],
     "//conditions:default": [],
@@ -13,8 +13,8 @@ cc_binary(
         "litert_lm.def",
     ],
     linkopts = outputs,
-    linkshared = True, # 强制生成动态库
+    linkshared = True,
     deps = [
-        "//c:engine", # 官方底座
+        "//c:engine", 
     ],
 )
