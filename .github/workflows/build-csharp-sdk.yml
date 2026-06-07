@@ -47,7 +47,15 @@ jobs:
           echo "" > csharp/empty_ndk/BUILD
           mkdir -p csharp/empty_sdk
           echo "" > csharp/empty_sdk/WORKSPACE
-          echo "" > csharp/empty_sdk/BUILD
+          cat << 'EOF' > csharp/empty_sdk/BUILD
+          toolchain_type(name = "dummy_type")
+          toolchain(
+              name = "sdk-toolchain",
+              toolchain = ":dummy",
+              toolchain_type = ":dummy_type",
+          )
+          filegroup(name = "dummy")
+          EOF
         shell: bash
 
       - name: Build Shared Library via Bazel
