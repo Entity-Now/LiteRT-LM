@@ -3,11 +3,11 @@ name: Build and Release LiteRT-LM Cross-Platform Shared Libraries
 on:
   push:
     tags:
-      - 'v*' # 当你推送形如 v1.0.0 的 tag 时自动触发
-  workflow_dispatch: # 允许你在 GitHub 页面上手动点击按钮触发
+      - 'v*'
+  workflow_dispatch:
 
 permissions:
-  contents: write # 开启写入 Release 的权限
+  contents: write
 
 jobs:
   build:
@@ -18,13 +18,13 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            platform-name: windows
+            platform: windows
             output-name: litert_lm_windows.zip
-          - os: macos-13 # Intel 芯片 Mac
-            platform-name: macos-x86_64
+          - os: macos-13
+            platform: macos-x86_64
             output-name: litert_lm_macos_x86_64.zip
-          - os: macos-latest # Apple Silicon (M1/M2/M3) 芯片 Mac
-            platform-name: macos-arm64
+          - os: macos-latest
+            platform: macos-arm64
             output-name: litert_lm_macos_arm64.zip
 
     steps:
@@ -34,122 +34,72 @@ jobs:
       - name: Set up Bazel (Bazelisk)
         uses: bazelbuild/setup-bazelisk@v3
 
-      # --- Windows 平台的特定设置 ---
       - name: Set up MSVC (Windows only)
         if: matrix.os == 'windows-latest'
         uses: ilammy/msvc-dev-cmd@v1
 
-      # --- 核心编译步骤 ---
+      # ==================== 核心编译 ====================
       - name: Compile Library with Bazel
         run: |
-          bazel build //litert_c_api:litert_lm --compilation_mode=opt
+          bazel build //litert_c_api:litert_lm \
+            --compilation_mode=opt \
+            --symlink_prefix=build_output_ \
+            --verbose_failures
+        shell: bash
 
-      # --- Windows 平台打包 ---
+      # ==================== Windows 打包 ====================
       - name: Package Artifacts (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          # 1. 创建输出目录
           New-Item -ItemType Directory -Force -Path dist_bin
 
-          # 2. 深度遍历检索通过 DEF 强行导出的 dll 和对应生成的 lib 导入库
-          Write-Host "正在检索 Windows 编译产物..."
-          $dllFile = Get-ChildItem -Path "bazel-out\" -Filter "litert_lm.dll" -Recurse | Select-Object -First 1
-          $libFile = Get-ChildItem -Path "bazel-out\" -Filter "*litert_lm*.lib" -Recurse | Select-Object -First 1
+          $bazelBin = (bazel info bazel-bin).Trim()
+          Write-Host "Bazel bin path: $bazelBin"
 
-          if ($null -eq $dllFile) {
-              Write-Error "错误：未能在 bazel-out 中找到 litert_lm.dll，请检查上一步的编译日志。"
+          $dllPath = Join-Path $bazelBin "litert_c_api\litert_lm.dll"
+          $libPath = Join-Path $bazelBin "litert_c_api\litert_lm.lib"
+
+          if (-not (Test-Path $dllPath)) {
+              Write-Error "DLL not found at $dllPath"
               exit 1
           }
 
-          Write-Host "成功找到 DLL: $($dllFile.FullName)"
-          if ($null -ne $libFile) { Write-Host "成功找到 LIB: $($libFile.FullName)" }
-
-          # 3. 复制到打包目录，附带官方 C API 头文件并重命名增强可读性
-          Copy-Item -Path $dllFile.FullName -Destination "dist_bin\litert_lm.dll" -Force
-          if ($null -ne $libFile) {
-              Copy-Item -Path $libFile.FullName -Destination "dist_bin\litert_lm.lib" -Force
+          Copy-Item -Path $dllPath -Destination "dist_bin\litert_lm.dll" -Force
+          if (Test-Path $libPath) {
+              Copy-Item -Path $libPath -Destination "dist_bin\litert_lm.lib" -Force
           }
           Copy-Item -Path "c\engine.h" -Destination "dist_bin\litert_lm_engine.h" -Force
 
-          # 4. 使用 Windows 原生 tar 打包
           tar -a -c -f ${{ matrix.output-name }} dist_bin
+          Write-Host "Windows package created: ${{ matrix.output-name }}"
 
-      # --- macOS 平台打包 ---
+      # ==================== macOS 打包 ====================
       - name: Package Artifacts (macOS)
         if: startsWith(matrix.os, 'macos')
+        shell: bash
         run: |
           mkdir -p dist_bin
-          
-          echo "正在检索 macOS 编译产物..."
-          # 使用 find 命令安全地查找实际生成的 dylib
-          DYLIB_PATH=$(find bazel-out/ -name "liblitert_lm.dylib" | head -n 1)
-          
+
+          BAZEL_BIN=$(bazel info bazel-bin)
+          echo "Bazel bin path: $BAZEL_BIN"
+
+          DYLIB_PATH=$(find "$BAZEL_BIN" -name "liblitert_lm.dylib" | head -n 1)
+
           if [ -z "$DYLIB_PATH" ]; then
-              echo "错误：未能找到 liblitert_lm.dylib，编译可能失败了。"
+              echo "Error: liblitert_lm.dylib not found"
               exit 1
           fi
-          
-          echo "成功找到 dylib: $DYLIB_PATH"
-          
-          # 复制到打包目录并附带官方的 C 接口头文件
+
           cp "$DYLIB_PATH" dist_bin/liblitert_lm.dylib
           cp c/engine.h dist_bin/litert_lm_engine.h
-          zip -r ${{ matrix.output-name }} dist_bin
 
-      # --- 暂存编译好的压缩包，供下方的 release 任务调用 ---
+          zip -r ${{ matrix.output-name }} dist_bin
+          echo "macOS package created: ${{ matrix.output-name }}"
+
+      # ==================== 上传 artifact ====================
       - name: Upload Intermediary Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.output-name }}
           path: ${{ matrix.output-name }}
-
-  release:
-    name: Create GitHub Release
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      # 下载前面所有矩阵任务生成的压缩包
-      - name: Download All Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: 'litert_lm_*'
-          path: './downloads'
-
-      # 如果是通过手动触发(workflow_dispatch)，生成一个带有运行编号的伪 tag 用于发布
-      - name: Set Env for Manual Trigger
-        if: github.event_name == 'workflow_dispatch'
-        run: echo "RELEASE_TAG=manual-build-${{ github.run_number }}" >> $GITHUB_ENV
-
-      # 如果是通过推送 Tag 触发
-      - name: Set Env for Tag Trigger
-        if: github.event_name == 'push'
-        run: echo "RELEASE_TAG=${{ github.ref_name }}" >> $GITHUB_ENV
-
-      # 自动创建 Release 并上传这三个架构的压缩包
-      - name: Generate GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: LiteRT-LM Official Dynamic Libraries (${{ env.RELEASE_TAG }})
-          body: |
-            ## 📦 自动化跨平台动态库编译产物 (基于官方稳定 C API 封装)
-            
-            内部已静态内嵌全套 LiteRT 大模型推理 Runtime 及相关底层算子。
-            
-            ### 🛠 包含架构与产物清单：
-            - **Windows (x86_64)**: `litert_lm.dll` (动态链接库) & `litert_lm.lib` (MSVC 导入库)
-            - **macOS Intel (x86_64)**: `liblitert_lm.dylib` (适用于 Intel 芯片 Mac)
-            - **macOS Apple Silicon (ARM64)**: `liblitert_lm.dylib` (适用于 M1/M2/M3/M5 芯片 Mac)
-            
-            ### 💡 调用方式：
-            各平台压缩包内均附带了 `litert_lm_engine.h`。外部调用直接包含该头文件，并通过原生 C 符号（如 `litert_lm_engine_create`）无缝操纵模型即可。
-          draft: false
-          prerelease: false
-          files: |
-            ./downloads/litert_lm_windows.zip/litert_lm_windows.zip
-            ./downloads/litert_lm_macos_x86_64.zip/litert_lm_macos_x86_64.zip
-            ./downloads/litert_lm_macos_arm64.zip/litert_lm_macos_arm64.zip
