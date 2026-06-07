@@ -1,5 +1,27 @@
 LIBRARY litert_lm
 EXPORTS
-    LiteRtEngineCreate
-    LiteRtEngineInference
-    LiteRtEngineDestroy
+    ; --- Engine APIs ---
+    litert_lm_engine_create
+    litert_lm_engine_delete
+    litert_lm_engine_load_model
+
+    ; --- Session & Conversation Config APIs ---
+    litert_lm_session_config_create
+    litert_lm_session_config_delete
+    litert_lm_conversation_config_create
+    litert_lm_conversation_config_delete
+
+    ; --- Session APIs (One-shot) ---
+    litert_lm_session_create
+    litert_lm_session_delete
+    litert_lm_session_generate
+    litert_lm_session_generate_async
+
+    ; --- Conversation APIs (Chat/Multi-turn) ---
+    litert_lm_conversation_create
+    litert_lm_conversation_delete
+    litert_lm_conversation_send_message
+    litert_lm_conversation_clear_history
+
+    ; --- Utils / String management ---
+    litert_lm_string_delete
