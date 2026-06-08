@@ -2,11 +2,10 @@ name: Build C# SDK and Native Libraries
 
 on:
   push:
-    branches: [ main, master ]
     tags:
       - 'v*'
-  pull_request:
-    branches: [ main, master ]
+  release:
+    types: [published, created]
   workflow_dispatch:
 
 permissions:

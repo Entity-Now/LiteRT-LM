@@ -17,9 +17,8 @@ on:
   push:
     tags:
     - v*.*.*
-  pull_request:
-    branches:
-    - main
+  release:
+    types: [published, created]
   schedule:
     - cron: "0 10 * * *"  # Run at 2am PST (10am UTC) every day to refresh the cache.
   workflow_dispatch:  # Manual trigger
