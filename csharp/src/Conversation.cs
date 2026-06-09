@@ -68,7 +68,7 @@ namespace LiteRTLM.Core
 
             for (int i = 0; i < 25; i++)
             {
-                var (responseJson, responseString) = AttemptSendMessage(currentMessageJson, extraContext);
+                var (responseJson, responseString) = await Task.Run(() => AttemptSendMessage(currentMessageJson, extraContext)).ConfigureAwait(false);
 
                 if (responseJson.TryGetProperty("tool_calls", out var toolCallsVal) && toolCallsVal.ValueKind == JsonValueKind.Array)
                 {
@@ -155,43 +155,46 @@ namespace LiteRTLM.Core
             var gch = GCHandle.Alloc(context);
             context.GCHandle = gch;
 
-            try
+            _ = Task.Run(() =>
             {
-                string messageJson = message.ToJsonString();
-                string extraContextJson = extraContext != null ? JsonSerializer.Serialize(extraContext) : null;
-
-                IntPtr optionalArgs = LiteRtLmNative.litert_lm_conversation_optional_args_create();
-                if (ExperimentalFlags.VisualTokenBudget.HasValue)
-                {
-                    LiteRtLmNative.litert_lm_conversation_optional_args_set_visual_token_budget(optionalArgs, ExperimentalFlags.VisualTokenBudget.Value);
-                }
-
                 try
                 {
-                    int status = LiteRtLmNative.litert_lm_conversation_send_message_stream(
-                        _handle,
-                        messageJson,
-                        extraContextJson,
-                        optionalArgs,
-                        _streamCallback,
-                        GCHandle.ToIntPtr(gch)
-                    );
+                    string messageJson = message.ToJsonString();
+                    string extraContextJson = extraContext != null ? JsonSerializer.Serialize(extraContext) : null;
 
-                    if (status != 0)
+                    IntPtr optionalArgs = LiteRtLmNative.litert_lm_conversation_optional_args_create();
+                    if (ExperimentalFlags.VisualTokenBudget.HasValue)
                     {
-                        gch.Free();
-                        throw new LiteRTLMConversationException($"Failed to start stream. Status: {status}");
+                        LiteRtLmNative.litert_lm_conversation_optional_args_set_visual_token_budget(optionalArgs, ExperimentalFlags.VisualTokenBudget.Value);
+                    }
+
+                    try
+                    {
+                        int status = LiteRtLmNative.litert_lm_conversation_send_message_stream(
+                            _handle,
+                            messageJson,
+                            extraContextJson,
+                            optionalArgs,
+                            _streamCallback,
+                            GCHandle.ToIntPtr(gch)
+                        );
+
+                        if (status != 0)
+                        {
+                            gch.Free();
+                            channel.Writer.TryComplete(new LiteRTLMConversationException($"Failed to start stream. Status: {status}"));
+                        }
+                    }
+                    finally
+                    {
+                        LiteRtLmNative.litert_lm_conversation_optional_args_delete(optionalArgs);
                     }
                 }
-                finally
+                catch (Exception ex)
                 {
-                    LiteRtLmNative.litert_lm_conversation_optional_args_delete(optionalArgs);
+                    channel.Writer.TryComplete(ex);
                 }
-            }
-            catch (Exception ex)
-            {
-                channel.Writer.TryComplete(ex);
-            }
+            });
 
             var reader = channel.Reader;
             while (await reader.WaitToReadAsync(cancellationToken))

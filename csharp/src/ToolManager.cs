@@ -24,7 +24,13 @@ namespace LiteRTLM.Core
 {
     public class ToolManager
     {
-        private readonly Dictionary<string, Type> _toolRegistry = new Dictionary<string, Type>();
+        private class ToolMetadata
+        {
+            public Type ToolType;
+            public Dictionary<string, (PropertyInfo Prop, ToolParamAttribute Attr)> Params;
+        }
+
+        private readonly Dictionary<string, ToolMetadata> _toolRegistry = new Dictionary<string, ToolMetadata>();
         public string ToolsJsonDescription { get; }
 
         public ToolManager(IEnumerable<ITool> tools)
@@ -39,8 +45,25 @@ namespace LiteRTLM.Core
                     var toolType = tool.GetType();
                     var name = tool.Name;
                     var toolNameInModel = useSnakeCase ? CamelToSnakeCase(name) : name;
-                    _toolRegistry[toolNameInModel] = toolType;
+                    
+                    var metadata = new ToolMetadata 
+                    { 
+                        ToolType = toolType,
+                        Params = new Dictionary<string, (PropertyInfo Prop, ToolParamAttribute Attr)>()
+                    };
 
+                    var props = toolType.GetProperties(BindingFlags.Public | BindingFlags.Instance);
+                    foreach (var prop in props)
+                    {
+                        var attr = prop.GetCustomAttribute<ToolParamAttribute>();
+                        if (attr != null)
+                        {
+                            var cleanName = useSnakeCase ? CamelToSnakeCase(prop.Name) : prop.Name;
+                            metadata.Params[cleanName] = (prop, attr);
+                        }
+                    }
+
+                    _toolRegistry[toolNameInModel] = metadata;
                     schemaList.Add(GetSchema(tool, useSnakeCase));
                 }
             }
@@ -50,25 +73,18 @@ namespace LiteRTLM.Core
 
         public async Task<object> ExecuteAsync(string name, Dictionary<string, object> arguments)
         {
-            if (!_toolRegistry.TryGetValue(name, out var toolType))
+            if (!_toolRegistry.TryGetValue(name, out var metadata))
             {
                 throw new LiteRTLMToolException($"Tool '{name}' not found.");
             }
 
-            var toolInstance = (ITool)Activator.CreateInstance(toolType);
-            bool useSnakeCase = ExperimentalFlags.ConvertCamelToSnakeCaseInToolDescription;
+            var toolInstance = (ITool)Activator.CreateInstance(metadata.ToolType);
 
-            var properties = toolType.GetProperties(BindingFlags.Public | BindingFlags.Instance);
-            foreach (var prop in properties)
+            foreach (var kvp in metadata.Params)
             {
-                var attr = prop.GetCustomAttribute<ToolParamAttribute>();
-                if (attr == null) continue;
-
-                var cleanName = prop.Name;
-                if (useSnakeCase)
-                {
-                    cleanName = CamelToSnakeCase(cleanName);
-                }
+                var cleanName = kvp.Key;
+                var prop = kvp.Value.Prop;
+                var attr = kvp.Value.Attr;
 
                 object val = null;
                 if (arguments != null && arguments.TryGetValue(cleanName, out var jsonVal))
