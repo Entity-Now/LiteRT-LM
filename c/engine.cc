@@ -18,6 +18,9 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#if defined(_WIN32)
+#include <io.h>
+#endif
 #include <optional>
 #include <string>
 #include <utility>
@@ -169,6 +172,7 @@ using ::litert::lm::EngineFactory;
 using ::litert::lm::EngineSettings;
 using ::litert::lm::OptionalArgs;
 
+using ::litert::lm::ScopedFile;
 using ::litert::lm::Message;
 using ::litert::lm::ModelAssets;
 using ::litert::lm::Responses;
@@ -178,6 +182,49 @@ using ::litert::lm::proto::SamplerParameters;
 struct LiteRtLmEngineSettings {
   std::unique_ptr<EngineSettings> settings;
 };
+
+static LiteRtLmEngineSettings* CreateEngineSettingsHelper(
+    ModelAssets model_assets, absl::string_view backend_str,
+    absl::string_view vision_backend_str, absl::string_view audio_backend_str) {
+  auto backend = litert::lm::GetBackendFromString(backend_str);
+  if (!backend.ok()) {
+    ABSL_LOG(ERROR) << "Failed to parse backend: " << backend.status();
+    return nullptr;
+  }
+
+  std::optional<litert::lm::Backend> vision_backend;
+  if (!vision_backend_str.empty()) {
+    auto backend = litert::lm::GetBackendFromString(vision_backend_str);
+    if (!backend.ok()) {
+      ABSL_LOG(ERROR) << "Failed to parse vision backend: " << backend.status();
+      return nullptr;
+    }
+    vision_backend = *backend;
+  }
+
+  std::optional<litert::lm::Backend> audio_backend;
+  if (!audio_backend_str.empty()) {
+    auto backend = litert::lm::GetBackendFromString(audio_backend_str);
+    if (!backend.ok()) {
+      ABSL_LOG(ERROR) << "Failed to parse audio backend: " << backend.status();
+      return nullptr;
+    }
+    audio_backend = *backend;
+  }
+
+  auto engine_settings = EngineSettings::CreateDefault(
+      std::move(model_assets), *backend, vision_backend, audio_backend);
+  if (!engine_settings.ok()) {
+    ABSL_LOG(ERROR) << "Failed to create engine settings: "
+                    << engine_settings.status();
+    return nullptr;
+  }
+
+  auto* c_settings = new LiteRtLmEngineSettings;
+  c_settings->settings =
+      std::make_unique<EngineSettings>(std::move(*engine_settings));
+  return c_settings;
+}
 
 struct LiteRtLmEngine {
   std::unique_ptr<Engine> engine;
@@ -203,6 +250,9 @@ struct LiteRtLmConversation {
   // ensuring memory safety for the C API caller without requiring explicit
   // per-call deallocation.
   std::string last_rendered_message;
+  // This field stores the result of the last call to
+  // `litert_lm_conversation_render_preface_to_string`.
+  std::string last_rendered_preface;
 };
 
 struct LiteRtLmJsonResponse {
@@ -223,6 +273,8 @@ struct LiteRtLmConversationConfig {
   std::string extra_context_json;
   bool enable_constrained_decoding = false;
   bool filter_channel_content_from_kv_cache = false;
+  bool stream_tool_calls = false;
+  std::string stream_tool_calls_channel_name = "tool_call";
 };
 
 struct LiteRtLmConversationOptionalArgs {
@@ -400,6 +452,17 @@ void litert_lm_conversation_config_set_filter_channel_content_from_kv_cache(
   }
 }
 
+void litert_lm_conversation_config_set_stream_tool_calls(
+    LiteRtLmConversationConfig* config, bool stream_tool_calls,
+    const char* channel_name) {
+  if (config) {
+    config->stream_tool_calls = stream_tool_calls;
+    if (channel_name != nullptr) {
+      config->stream_tool_calls_channel_name = channel_name;
+    }
+  }
+}
+
 void litert_lm_conversation_config_delete(LiteRtLmConversationConfig* config) {
   delete config;
 }
@@ -437,46 +500,41 @@ LiteRtLmEngineSettings* litert_lm_engine_settings_create(
                     << model_assets.status();
     return nullptr;
   }
-  auto backend = litert::lm::GetBackendFromString(backend_str);
-  if (!backend.ok()) {
-    ABSL_LOG(ERROR) << "Failed to parse backend: " << backend.status();
-    return nullptr;
-  }
-
-  std::optional<litert::lm::Backend> vision_backend;
-  if (vision_backend_str) {
-    auto backend = litert::lm::GetBackendFromString(vision_backend_str);
-    if (!backend.ok()) {
-      ABSL_LOG(ERROR) << "Failed to parse vision backend: " << backend.status();
-      return nullptr;
-    }
-    vision_backend = *backend;
-  }
-
-  std::optional<litert::lm::Backend> audio_backend;
-  if (audio_backend_str) {
-    auto backend = litert::lm::GetBackendFromString(audio_backend_str);
-    if (!backend.ok()) {
-      ABSL_LOG(ERROR) << "Failed to parse audio backend: " << backend.status();
-      return nullptr;
-    }
-    audio_backend = *backend;
-  }
-
-  auto engine_settings = EngineSettings::CreateDefault(
-      *std::move(model_assets), *backend, vision_backend, audio_backend);
-  if (!engine_settings.ok()) {
-    ABSL_LOG(ERROR) << "Failed to create engine settings: "
-                    << engine_settings.status();
-    return nullptr;
-  }
-
-  auto* c_settings = new LiteRtLmEngineSettings;
-  c_settings->settings =
-      std::make_unique<EngineSettings>(*std::move(engine_settings));
-  return c_settings;
+  return CreateEngineSettingsHelper(
+      std::move(*model_assets), absl::NullSafeStringView(backend_str),
+      absl::NullSafeStringView(vision_backend_str),
+      absl::NullSafeStringView(audio_backend_str));
 }
 
+LiteRtLmEngineSettings*
+litert_lm_engine_settings_create_from_raw_file_descriptor(
+    int fd, const char* backend_str, const char* vision_backend_str,
+    const char* audio_backend_str) {
+  if (fd < 0) {
+    ABSL_LOG(ERROR) << "Invalid file descriptor: " << fd;
+    return nullptr;
+  }
+  auto model_assets = ModelAssets::Create(
+#if defined(_WIN32)
+      std::make_shared<litert::lm::ScopedFile>(litert::lm::ScopedFile(
+          reinterpret_cast<litert::lm::ScopedFile::PlatformFile>(
+              _get_osfhandle(fd)))));
+#else
+      std::make_shared<litert::lm::ScopedFile>(litert::lm::ScopedFile(fd)));
+#endif
+  if (!model_assets.ok()) {
+    ABSL_LOG(ERROR) << "Failed to create model assets from raw FD: "
+                    << model_assets.status();
+    return nullptr;
+  }
+  ABSL_LOG(INFO) << "LiteRT-LM successfully created EngineSettings directly "
+                    "from raw File Descriptor: "
+                 << fd;
+  return CreateEngineSettingsHelper(
+      std::move(*model_assets), absl::NullSafeStringView(backend_str),
+      absl::NullSafeStringView(vision_backend_str),
+      absl::NullSafeStringView(audio_backend_str));
+}
 void litert_lm_engine_settings_delete(LiteRtLmEngineSettings* settings) {
   delete settings;
 }
@@ -1098,6 +1156,8 @@ LiteRtLmConversation* litert_lm_conversation_create(
     builder.SetEnableConstrainedDecoding(c_config->enable_constrained_decoding);
     builder.SetFilterChannelContentFromKvCache(
         c_config->filter_channel_content_from_kv_cache);
+    builder.SetStreamToolCalls(c_config->stream_tool_calls,
+                               c_config->stream_tool_calls_channel_name);
     auto config = builder.Build(*engine->engine);
 
     if (!config.ok()) {
@@ -1243,6 +1303,21 @@ const char* litert_lm_conversation_render_message_to_string(
   }
   conversation->last_rendered_message = std::move(*rendered);
   return conversation->last_rendered_message.c_str();
+}
+
+const char* litert_lm_conversation_render_preface_to_string(
+    LiteRtLmConversation* conversation) {
+  if (!conversation || !conversation->conversation) {
+    return nullptr;
+  }
+  auto rendered = conversation->conversation->RenderPrefaceIntoString(
+      litert::lm::OptionalArgs());
+  if (!rendered.ok()) {
+    ABSL_LOG(ERROR) << "Failed to render preface: " << rendered.status();
+    return nullptr;
+  }
+  conversation->last_rendered_preface = std::move(*rendered);
+  return conversation->last_rendered_preface.c_str();
 }
 
 void litert_lm_conversation_cancel_process(LiteRtLmConversation* conversation) {

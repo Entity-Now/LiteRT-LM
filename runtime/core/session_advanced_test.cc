@@ -38,10 +38,11 @@
 #include "litert/cc/litert_environment.h"  // from @litert
 #include "litert/cc/litert_tensor_buffer.h"  // from @litert
 #include "litert/test/matchers.h"  // from @litert
-#include "runtime/components/constrained_decoding/fake_constraint.h"
+#include "runtime/components/logits_processor/constrained_decoding/fake_constraint.h"
 #include "runtime/components/model_resources.h"
 #include "runtime/components/sentencepiece_tokenizer.h"
 #include "runtime/components/tokenizer.h"
+#include "runtime/core/session_utils.h"
 #include "runtime/engine/engine_settings.h"
 #include "runtime/engine/io_types.h"
 #include "runtime/executor/audio_executor_settings.h"
@@ -179,6 +180,8 @@ class ExtendedTokenizer : public Tokenizer {
     return tokenizer_->GetTokens();
   }
 
+  int GetVocabSize() const override { return tokenizer_->GetVocabSize(); }
+
  private:
   explicit ExtendedTokenizer(std::unique_ptr<SentencePieceTokenizer> tokenizer)
       : tokenizer_(std::move(tokenizer)) {};
@@ -200,6 +203,7 @@ class SessionAdvancedTest : public testing::Test {
     tokenizer_ = std::move(*tokenizer);
     model_resources_ = std::unique_ptr<ModelResources>();
     sampler_params_.set_type(proto::SamplerParameters::TYPE_UNSPECIFIED);
+    fake_executor_ = nullptr;
   }
 
   absl::StatusOr<std::unique_ptr<SessionAdvanced>> CreateTestSession() {
@@ -218,6 +222,7 @@ class SessionAdvancedTest : public testing::Test {
             // "How's it going?"
             /*decode_tokens=*/{
                 {224}, {24}, {8}, {66}, {246}, {18}, {2295}, {2294}}));
+    fake_executor_ = executor.get();
     ASSIGN_OR_RETURN(
         execution_manager_,
         ThreadedExecutionManager::Create(
@@ -235,6 +240,7 @@ class SessionAdvancedTest : public testing::Test {
   std::unique_ptr<ModelResources> model_resources_;
   proto::SamplerParameters sampler_params_;
   std::shared_ptr<ExecutionManager> execution_manager_;
+  FakeLlmExecutor* fake_executor_ = nullptr;
 };
 
 absl::StatusOr<std::unique_ptr<AudioExecutorSettings>>
@@ -750,6 +756,95 @@ TEST_F(SessionAdvancedTest, RunPrefillAsync) {
   EXPECT_TRUE(done);
 }
 
+TEST_F(SessionAdvancedTest, PrefillPreprocessedContentsSuccess) {
+  const std::vector<std::vector<int>> stop_token_ids = {{2294}};
+  SessionConfig session_config = SessionConfig::CreateDefault();
+  session_config.GetMutableSamplerParams() = sampler_params_;
+  session_config.SetStartTokenId(2);
+  session_config.GetMutableStopTokenIds() = stop_token_ids;
+  session_config.SetSamplerBackend(Backend::CPU);
+  ASSERT_OK_AND_ASSIGN(
+      auto executor,
+      CreateFakeLlmExecutor(
+          // "Hello World!"
+          /*prefill_tokens=*/{{2, 90, 547, 58, 735, 210, 466, 2294}},
+          // "How's it going?"
+          /*decode_tokens=*/{
+              {224}, {24}, {8}, {66}, {246}, {18}, {2295}, {2294}}));
+  ASSERT_OK_AND_ASSIGN(
+      std::shared_ptr<ExecutionManager> execution_manager,
+      ThreadedExecutionManager::Create(tokenizer_.get(), model_resources_.get(),
+                                       std::move(executor),
+                                       /*vision_executor_settings=*/nullptr,
+                                       /*audio_executor_settings=*/nullptr,
+                                       /*litert_env=*/nullptr));
+
+  ASSERT_OK_AND_ASSIGN(
+      auto session,
+      SessionAdvanced::Create(execution_manager, tokenizer_.get(),
+                              session_config, /*benchmark_info=*/std::nullopt));
+
+  std::vector<InputData> inputs;
+  inputs.emplace_back(InputText("Hello World!"));
+
+  std::optional<BenchmarkInfo> benchmark_info;
+  ASSERT_OK_AND_ASSIGN(
+      auto preprocessed_contents,
+      PreprocessContents(inputs, session_config, *tokenizer_, benchmark_info));
+
+  bool done = false;
+  auto callback = CreateTestCallback(done);
+  EXPECT_OK(session->PrefillPreprocessedContents(
+      std::move(preprocessed_contents), std::move(callback)));
+  // Wait for the async call to finish.
+  EXPECT_OK(execution_manager->WaitUntilAllDone(absl::Seconds(100)));
+  EXPECT_TRUE(done);
+}
+
+TEST_F(SessionAdvancedTest,
+       PrefillPreprocessedContentsExecutionManagerUnavailable) {
+  const std::vector<std::vector<int>> stop_token_ids = {{2294}};
+  SessionConfig session_config = SessionConfig::CreateDefault();
+  session_config.GetMutableSamplerParams() = sampler_params_;
+  session_config.SetStartTokenId(2);
+  session_config.GetMutableStopTokenIds() = stop_token_ids;
+  session_config.SetSamplerBackend(Backend::CPU);
+  ASSERT_OK_AND_ASSIGN(
+      auto executor,
+      CreateFakeLlmExecutor(
+          /*prefill_tokens=*/{{2, 90, 547, 58, 735, 210, 466, 2294}},
+          /*decode_tokens=*/{
+              {224}, {24}, {8}, {66}, {246}, {18}, {2295}, {2294}}));
+  ASSERT_OK_AND_ASSIGN(
+      std::shared_ptr<ExecutionManager> execution_manager,
+      ThreadedExecutionManager::Create(tokenizer_.get(), model_resources_.get(),
+                                       std::move(executor),
+                                       /*vision_executor_settings=*/nullptr,
+                                       /*audio_executor_settings=*/nullptr,
+                                       /*litert_env=*/nullptr));
+
+  ASSERT_OK_AND_ASSIGN(
+      auto session,
+      SessionAdvanced::Create(execution_manager, tokenizer_.get(),
+                              session_config, /*benchmark_info=*/std::nullopt));
+
+  std::vector<InputData> inputs;
+  inputs.emplace_back(InputText("Hello World!"));
+
+  std::optional<BenchmarkInfo> benchmark_info;
+  ASSERT_OK_AND_ASSIGN(
+      auto preprocessed_contents,
+      PreprocessContents(inputs, session_config, *tokenizer_, benchmark_info));
+
+  execution_manager.reset();
+
+  auto callback = [](absl::StatusOr<Responses> responses) {};
+  EXPECT_THAT(session->PrefillPreprocessedContents(
+                  std::move(preprocessed_contents), std::move(callback)),
+              StatusIs(absl::StatusCode::kFailedPrecondition,
+                       "Execution manager is not available."));
+}
+
 TEST_F(SessionAdvancedTest, RunDecodeAsyncWithInternalSampler) {
   const std::vector<std::vector<int>> stop_token_ids = {{2294}};
   SessionConfig session_config = SessionConfig::CreateDefault();
@@ -1066,6 +1161,83 @@ TEST_F(SessionAdvancedTest, RewindToStep) {
   EXPECT_OK(session->RewindToStep(0));
   ASSERT_OK_AND_ASSIGN(int step4, session->GetCurrentStep());
   EXPECT_EQ(step4, 0);
+}
+
+TEST_F(SessionAdvancedTest, RewindToCheckpointRecoversFromFailure) {
+  ASSERT_OK_AND_ASSIGN(auto session, CreateTestSession());
+  ASSERT_NE(fake_executor_, nullptr);
+
+  std::vector<InputData> inputs;
+  inputs.emplace_back(InputText("Hello World!"));
+  EXPECT_OK(session->RunPrefill(inputs));
+
+  // Save checkpoint in clean state.
+  EXPECT_OK(session->SaveCheckpoint("checkpoint-1"));
+
+  // Simulate decode failure.
+  fake_executor_->SetDecodeStatus(
+      absl::InternalError("Simulated decode failure"));
+
+  auto decode_config = DecodeConfig::CreateDefault();
+  decode_config.SetMaxOutputTokens(2);
+  // This decode should fail.
+  EXPECT_THAT(
+      session->RunDecode(decode_config),
+      StatusIs(absl::StatusCode::kInternal, "Simulated decode failure"));
+
+  // Rewind to checkpoint. If the bug is present, last_task_ids_ will still
+  // point to the failed task. If fixed, it will point back to the prefill task.
+  EXPECT_OK(session->RewindToCheckpoint("checkpoint-1"));
+
+  // Restore decode status to OK.
+  fake_executor_->SetDecodeStatus(absl::OkStatus());
+
+  // Run decode again.
+  // If the bug is present, this will instantly fail with kDependentTaskFailed
+  // (propagated from the previous failed decode task) and return an error or
+  // empty result.
+  // If fixed, it will succeed and return the expected tokens.
+  ASSERT_OK_AND_ASSIGN(auto responses, session->RunDecode(decode_config));
+  EXPECT_EQ(responses.GetTexts().size(), 1);
+  EXPECT_EQ(responses.GetTexts()[0], " How'");
+}
+
+TEST_F(SessionAdvancedTest, RewindToStepRecoversFromFailure) {
+  ASSERT_OK_AND_ASSIGN(auto session, CreateTestSession());
+  ASSERT_NE(fake_executor_, nullptr);
+
+  std::vector<InputData> inputs;
+  inputs.emplace_back(InputText("Hello World!"));
+  EXPECT_OK(session->RunPrefill(inputs));
+
+  // Get step after prefill (should be 8).
+  ASSERT_OK_AND_ASSIGN(int step_before_decode, session->GetCurrentStep());
+  EXPECT_EQ(step_before_decode, 8);
+
+  // Simulate decode failure.
+  fake_executor_->SetDecodeStatus(
+      absl::InternalError("Simulated decode failure"));
+
+  auto decode_config = DecodeConfig::CreateDefault();
+  decode_config.SetMaxOutputTokens(2);
+  // This decode should fail.
+  EXPECT_THAT(
+      session->RunDecode(decode_config),
+      StatusIs(absl::StatusCode::kInternal, "Simulated decode failure"));
+
+  // Rewind to step before decode. If the bug is present, last_task_ids_ will
+  // still point to the failed task. If fixed, it will be cleared.
+  EXPECT_OK(session->RewindToStep(step_before_decode));
+
+  // Restore decode status to OK.
+  fake_executor_->SetDecodeStatus(absl::OkStatus());
+
+  // Run decode again.
+  // If the bug is present, this will instantly fail with kDependentTaskFailed.
+  // If fixed, it will succeed.
+  ASSERT_OK_AND_ASSIGN(auto responses, session->RunDecode(decode_config));
+  EXPECT_EQ(responses.GetTexts().size(), 1);
+  EXPECT_EQ(responses.GetTexts()[0], " How'");
 }
 
 TEST_F(SessionAdvancedTest, RunPrefillAndDecodeAsyncWithInternalSampler) {

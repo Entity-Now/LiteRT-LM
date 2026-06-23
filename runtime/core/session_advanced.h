@@ -129,6 +129,11 @@ class SessionAdvanced : public SessionInterface {
       absl::AnyInvocable<void(absl::StatusOr<Responses>)> callback) override
       ABSL_LOCKS_EXCLUDED(mutex_);
 
+  absl::StatusOr<std::unique_ptr<TaskController>> PrefillPreprocessedContents(
+      std::vector<InputData> preprocessed_contents,
+      absl::AnyInvocable<void(absl::StatusOr<Responses>)> callback) override
+      ABSL_LOCKS_EXCLUDED(mutex_);
+
   absl::StatusOr<Responses> RunDecode() override;
 
   absl::StatusOr<Responses> RunDecode(
@@ -259,6 +264,7 @@ class SessionAdvanced : public SessionInterface {
   struct CheckpointInfo {
     int step;
     SessionState state;
+    absl::flat_hash_set<TaskId> last_task_ids;
   };
 
   // The checkpoint map for the session.

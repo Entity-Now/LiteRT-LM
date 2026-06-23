@@ -35,9 +35,10 @@
 #include "absl/time/time.h"  // from @com_google_absl
 #include "absl/types/span.h"  // from @com_google_absl
 #include "nlohmann/json.hpp"  // from @nlohmann_json
-#include "runtime/components/constrained_decoding/constraint_provider.h"
-#include "runtime/components/constrained_decoding/constraint_provider_config.h"
-#include "runtime/components/constrained_decoding/constraint_provider_factory.h"
+#include "runtime/components/logits_processor/constrained_decoding/constraint_provider.h"
+#include "runtime/components/logits_processor/constrained_decoding/constraint_provider_config.h"
+#include "runtime/components/logits_processor/constrained_decoding/constraint_provider_factory.h"
+#include "runtime/components/logits_processor/repetition_penalty_config.h"
 #include "runtime/components/prompt_template.h"
 #include "runtime/conversation/channel_util.h"
 #include "runtime/conversation/internal_callback_util.h"
@@ -104,7 +105,9 @@ absl::StatusOr<ConversationConfig> ConversationConfig::CreateInternal(
     std::optional<std::vector<Channel>> overwrite_channels,
     bool filter_channel_content_from_kv_cache,
     bool return_error_on_parse_failure, bool return_error_on_max_tokens_reached,
-    bool enable_thinking) {
+    bool enable_thinking, bool stream_tool_calls,
+    const std::string& stream_tool_calls_channel_name,
+    RepetitionPenaltyConfig repetition_penalty_config) {
   if (preface.has_value() && !std::holds_alternative<JsonPreface>(*preface)) {
     return absl::InvalidArgumentError("Only JsonPreface is supported for now.");
   }
@@ -171,7 +174,8 @@ absl::StatusOr<ConversationConfig> ConversationConfig::CreateInternal(
       processor_config, enable_constrained_decoding, prefill_preface_on_init,
       std::move(constraint_provider_config), std::move(channels),
       filter_channel_content_from_kv_cache, return_error_on_parse_failure,
-      return_error_on_max_tokens_reached, enable_thinking);
+      return_error_on_max_tokens_reached, enable_thinking, stream_tool_calls,
+      stream_tool_calls_channel_name, repetition_penalty_config);
 }
 
 absl::StatusOr<std::string>
@@ -293,9 +297,13 @@ absl::StatusOr<DecodeConfig> Conversation::CreateDecodeConfig(
     std::optional<ConstraintArg> decoding_constraint,
     std::optional<int> max_output_tokens) {
   auto decode_config = DecodeConfig::CreateDefault();
+
+  decode_config.SetRepetitionPenaltyConfig(config_.repetition_penalty_config());
+
   if (max_output_tokens.has_value()) {
     decode_config.SetMaxOutputTokens(max_output_tokens.value());
   }
+
   if (decoding_constraint.has_value() && constraint_provider_ != nullptr) {
     ASSIGN_OR_RETURN(constraint_, constraint_provider_->CreateConstraint(
                                       std::move(decoding_constraint).value()));
@@ -531,11 +539,10 @@ absl::Status Conversation::SendMessageAsync(
     }
   }
 
-  ASSIGN_OR_RETURN(
-      auto session_inputs,
-      model_data_processor_->ToInputDataVector(
-          single_turn_text, messages_for_conversion,
-          optional_args.args.value_or(std::monostate())));
+  ASSIGN_OR_RETURN(auto session_inputs,
+                   model_data_processor_->ToInputDataVector(
+                       single_turn_text, messages_for_conversion,
+                       optional_args.args.value_or(std::monostate())));
 
   if (is_appending_message_) {
     ASSIGN_OR_RETURN(
@@ -580,7 +587,9 @@ absl::Status Conversation::SendMessageAsync(
               optional_args.args.value_or(std::monostate()),
               config_.GetChannels(), std::move(user_callback),
               std::move(cancel_callback), std::move(complete_message_callback),
-              open_channel_name, config_.return_error_on_max_tokens_reached()));
+              open_channel_name, config_.return_error_on_max_tokens_reached(),
+              config_.stream_tool_calls(),
+              config_.stream_tool_calls_channel_name()));
 
   ASSIGN_OR_RETURN(
       auto decode_config,
@@ -776,6 +785,29 @@ absl::StatusOr<std::unique_ptr<Conversation>> Conversation::Clone() {
 absl::StatusOr<std::string> Conversation::RenderMessageIntoString(
     const Message& message, OptionalArgs optional_args) {
   return GetSingleTurnText(message, optional_args);
+}
+
+absl::StatusOr<std::string> Conversation::RenderPrefaceIntoString(
+    OptionalArgs optional_args) {
+  PromptTemplateInput tmpl_input;
+  RETURN_IF_ERROR(FillPrefaceForPromptTemplateInput(
+      preface_, model_data_processor_.get(), tmpl_input));
+
+  if (optional_args.enable_thinking.has_value()) {
+    tmpl_input.extra_context["enable_thinking"] =
+        *optional_args.enable_thinking;
+  } else if (config_.enable_thinking()) {
+    tmpl_input.extra_context["enable_thinking"] = true;
+  }
+
+  if (optional_args.extra_context.has_value()) {
+    for (const auto& [key, value] : optional_args.extra_context->items()) {
+      tmpl_input.extra_context[key] = value;
+    }
+  }
+
+  tmpl_input.add_generation_prompt = false;
+  return ApplyTemplate(tmpl_input);
 }
 
 absl::StatusOr<std::string> Conversation::GetPrefillTextForMessages(

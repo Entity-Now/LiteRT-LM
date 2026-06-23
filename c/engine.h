@@ -224,6 +224,15 @@ void litert_lm_conversation_config_set_filter_channel_content_from_kv_cache(
     LiteRtLmConversationConfig* config,
     bool filter_channel_content_from_kv_cache);
 
+// Sets whether to stream tool call tokens.
+// @param config The config to modify.
+// @param stream_tool_calls Whether to stream tool call tokens.
+// @param channel_name The channel name to use for tool call tokens.
+LITERT_LM_C_API_EXPORT
+void litert_lm_conversation_config_set_stream_tool_calls(
+    LiteRtLmConversationConfig* config, bool stream_tool_calls,
+    const char* channel_name);
+
 // Destroys a LiteRT LM Conversation Config.
 // @param config The config to destroy.
 LITERT_LM_C_API_EXPORT
@@ -294,6 +303,22 @@ LITERT_LM_C_API_EXPORT
 LiteRtLmEngineSettings* litert_lm_engine_settings_create(
     const char* model_path, const char* backend_str,
     const char* vision_backend_str, const char* audio_backend_str);
+
+// Creates LiteRT LM Engine Settings from a raw file descriptor. The engine
+// takes ownership of the file descriptor and will close it when done.
+// The caller is responsible for destroying the settings using
+// `litert_lm_engine_settings_delete`.
+//
+// @param fd The file descriptor of the model.
+// @param backend_str The backend to use (e.g., "cpu", "gpu").
+// @param vision_backend_str The vision backend to use, or NULL if not set.
+// @param audio_backend_str The audio backend to use, or NULL if not set.
+// @return A pointer to the created settings, or NULL on failure.
+LITERT_LM_C_API_EXPORT
+LiteRtLmEngineSettings*
+litert_lm_engine_settings_create_from_raw_file_descriptor(
+    int fd, const char* backend_str, const char* vision_backend_str,
+    const char* audio_backend_str);
 
 // Destroys LiteRT LM Engine Settings.
 //
@@ -854,6 +879,16 @@ int litert_lm_conversation_send_message_stream(
 LITERT_LM_C_API_EXPORT
 const char* litert_lm_conversation_render_message_to_string(
     LiteRtLmConversation* conversation, const char* message_json);
+
+// Renders the preface into a string according to the template.
+//
+// @param conversation The conversation instance.
+// @return A pointer to the rendered string, or NULL on failure. The returned
+//   string is owned by the `conversation` object and is valid until the next
+//   call to this function or until the conversation is deleted.
+LITERT_LM_C_API_EXPORT
+const char* litert_lm_conversation_render_preface_to_string(
+    LiteRtLmConversation* conversation);
 
 // Cancels the ongoing inference process, for asynchronous inference.
 //

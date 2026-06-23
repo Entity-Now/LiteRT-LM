@@ -299,4 +299,16 @@ class ConversationTests: XCTestCase {
     XCTAssertFalse(rendered.isEmpty)
     XCTAssertTrue(rendered.contains("Hello world"))
   }
+
+  func testRenderPrefaceIntoString() async throws {
+    let config = ConversationConfig(
+      initialMessages: [Message("You are a helpful assistant", role: .system)]
+    )
+    let conversation = try await self.engine.createConversation(with: config)
+    XCTAssertTrue(conversation.isAlive)
+
+    let rendered = try conversation.renderPrefaceIntoString()
+    XCTAssertFalse(rendered.isEmpty)
+    XCTAssertTrue(rendered.contains("You are a helpful assistant"))
+  }
 }

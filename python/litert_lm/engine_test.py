@@ -137,8 +137,9 @@ class EngineTest(LiteRtLmTestBase):
         with mock.patch.dict("sys.modules", {"openvino": mock_ov}):
           with mock.patch("importlib.resources.files") as unused_mock_files:
             try:
-              npu = litert_lm.Backend.NPU()
-              npu.litert_dispatch_lib_dir = "my_custom_dir"
+              npu = litert_lm.Backend.NPU(
+                  litert_dispatch_lib_dir="my_custom_dir"
+              )
               litert_lm.Engine(
                   self.model_path,
                   npu,
@@ -413,6 +414,29 @@ class EngineTest(LiteRtLmTestBase):
         engine.create_conversation(messages=messages) as conversation,
     ):
       self.assertEqual(conversation.messages, messages)
+
+  def test_create_conversation_with_max_output_tokens(self):
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation(max_output_tokens=1) as conversation,
+    ):
+      self.assertEqual(conversation.max_output_tokens, 1)
+      message = conversation.send_message("Hello world!")
+      self.assertEqual(message["role"], "assistant")
+      # Response should be shorter because of max_output_tokens=1 default in
+      # conversation
+      text = "".join([c.get("text", "") for c in message.get("content", [])])
+      self.assertLess(len(text), 10)
+
+  def test_create_conversation_with_max_output_tokens_async(self):
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation(max_output_tokens=1) as conversation,
+    ):
+      stream = conversation.send_message_async("Hello world!")
+      text_pieces = self._extract_text(stream)
+      self.assertLen(text_pieces, 1)
+      self.assertLess(len("".join(text_pieces)), 10)
 
   def test_conversation_send_message_object(self):
     with (

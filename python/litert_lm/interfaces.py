@@ -20,6 +20,7 @@ import abc
 import collections.abc
 import dataclasses
 from importlib import resources
+import logging
 import os
 import sys
 from typing import Any
@@ -60,6 +61,7 @@ class GPU(Backend):
   """GPU hardware backend for LiteRT-LM."""
 
 
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class NPU(Backend):
   """NPU hardware backend for LiteRT-LM.
 
@@ -67,30 +69,56 @@ class NPU(Backend):
     litert_dispatch_lib_dir: The directory containing LiteRT dispatch libs.
   """
 
-  def __init__(self):
-    """Initializes the NPU backend."""
-    self.litert_dispatch_lib_dir = ""
-    if sys.platform == "win32":
-      try:
-        import openvino as ov  # pylint: disable=g-import-not-at-top  # pytype: disable=import-error
+  litert_dispatch_lib_dir: str | None = None
 
-        if "NPU" in ov.Core().available_devices:
-          self.litert_dispatch_lib_dir = str(
-              resources.files(__package__) / "vendors/intel_openvino/dispatch/"
-          )
+  def __post_init__(self):
+    """Initializes the NPU backend.
 
-          # openvino package place the NPU libs in "libs".
-          # Includes to PATH so Windows can load it.
-          libs_dir = os.path.join(os.path.dirname(ov.__file__), "libs")
-          os.environ["PATH"] = os.environ["PATH"] + ";" + libs_dir
-      except ImportError:
-        pass
+    Raises:
+      RuntimeError: If the NPU backend is not supported on the current platform.
+    """
+    if self.litert_dispatch_lib_dir == "":  # pylint: disable=g-explicit-bool-comparison
+      logging.warning(
+          "NPU backend is initialized with an empty litert_dispatch_lib_dir."
+          " This means the model will be simulated on the CPU, where the model"
+          " is expected to NOT be AOT compiled."
+      )
+      object.__setattr__(self, "litert_dispatch_lib_dir", "")
+      return
+    elif self.litert_dispatch_lib_dir is None:
+      object.__setattr__(self, "litert_dispatch_lib_dir", "")
+
+      if sys.platform == "win32":
+        try:
+          import openvino as ov  # pylint: disable=g-import-not-at-top  # pytype: disable=import-error
+
+          if "NPU" in ov.Core().available_devices:
+            litert_dispatch_lib_dir = str(
+                resources.files(__package__)
+                / "vendors/intel_openvino/dispatch/"
+            )
+            object.__setattr__(
+                self, "litert_dispatch_lib_dir", litert_dispatch_lib_dir
+            )
+
+            # openvino package place the NPU libs in "libs".
+            # Includes to PATH so Windows can load it.
+            libs_dir = os.path.join(os.path.dirname(ov.__file__), "libs")
+            os.environ["PATH"] = os.environ["PATH"] + ";" + libs_dir
+        except ImportError:
+          pass
 
     if not self.litert_dispatch_lib_dir:
       raise RuntimeError(
-          "NPU is supported only for Intel OpenVINO on Windows. It is expected"
-          " to install the 'openvino' package and have an NPU available."
+          "NPU is supported only for Intel OpenVINO on Windows. It is"
+          " expected to install the 'openvino' package and have an NPU"
+          " available."
       )
+
+  def __eq__(self, other: Any) -> bool:
+    if type(self) is not type(other):
+      return NotImplemented
+    return self.litert_dispatch_lib_dir == other.litert_dispatch_lib_dir
 
 
 Backend.CPU = CPU
@@ -177,6 +205,34 @@ class SamplerConfig:
       )
 
 
+@dataclasses.dataclass
+class LoraRankConfig:
+  """Configuration for LoRA ranks.
+
+  Attributes:
+      lora_rank: The rank of the text LoRA weights. If 0 or None, LoRA is
+        disabled.
+      audio_lora_rank: The rank of the audio LoRA weights. If 0 or None, audio
+        LoRA is disabled.
+  """
+
+  lora_rank: int | None = None
+  audio_lora_rank: int | None = None
+
+
+@dataclasses.dataclass
+class LoraConfig:
+  """Configuration for LoRA weights.
+
+  Attributes:
+      lora_path: Path to the text LoRA weights file.
+      audio_lora_path: Path to the audio LoRA weights file.
+  """
+
+  lora_path: str | None = None
+  audio_lora_path: str | None = None
+
+
 @dataclasses.dataclass(kw_only=True)
 class AbstractEngine(abc.ABC):
   """Abstract base class for LiteRT-LM engines.
@@ -193,6 +249,7 @@ class AbstractEngine(abc.ABC):
         None, use the model's default. If True, enable speculative decoding; an
         error will be thrown if the model does not support it. If False, disable
         it.
+      lora_rank_config: Configuration for LoRA ranks.
       bos_token_id: The BOS token id for the model if one is configured.
       eos_token_ids: Stop token sequences configured for the model.
   """
@@ -204,6 +261,7 @@ class AbstractEngine(abc.ABC):
   vision_backend: Backend | None = None
   audio_backend: Backend | None = None
   enable_speculative_decoding: bool | None = None
+  lora_rank_config: LoraRankConfig | None = None
 
   def __enter__(self) -> AbstractEngine:
     """Initializes the engine resources."""
@@ -230,6 +288,8 @@ class AbstractEngine(abc.ABC):
       extra_context: collections.abc.Mapping[str, Any] | None = None,
       filter_channel_content_from_kv_cache: bool = False,
       sampler_config: SamplerConfig | None = None,
+      lora_config: LoraConfig | None = None,
+      max_output_tokens: int | None = None,
   ) -> AbstractConversation:
     """Creates a new conversation for this engine.
 
@@ -247,6 +307,8 @@ class AbstractEngine(abc.ABC):
           persisted in the KV cache.
         sampler_config: Configuration for the sampling process. If None, then
           uses the engine's default values.
+        lora_config: Configuration for LoRA adapters.
+        max_output_tokens: The maximum number of output tokens.
     """
 
   @abc.abstractmethod
@@ -255,6 +317,7 @@ class AbstractEngine(abc.ABC):
       *,
       apply_prompt_template: bool = True,
       sampler_config: SamplerConfig | None = None,
+      lora_config: LoraConfig | None = None,
   ) -> AbstractSession:
     """Creates a new session for this engine.
 
@@ -263,6 +326,7 @@ class AbstractEngine(abc.ABC):
           the session.
         sampler_config: Configuration for the sampling process. If None, then
           uses the engine's default values.
+        lora_config: Configuration for LoRA adapters.
 
     Returns:
         A new session instance for low-level interaction with the model.
@@ -297,6 +361,8 @@ class AbstractConversation(abc.ABC):
       automatic_tool_calling: Whether to automatically call tools.
       extra_context: Extra context for the chat template.
       sampler_config: Configuration for the sampling process.
+      lora_config: Configuration for LoRA adapters.
+      max_output_tokens: The maximum number of output tokens.
   """
 
   def __init__(
@@ -314,6 +380,8 @@ class AbstractConversation(abc.ABC):
       automatic_tool_calling: bool = True,
       extra_context: collections.abc.Mapping[str, Any] | None = None,
       sampler_config: SamplerConfig | None = None,
+      lora_config: LoraConfig | None = None,
+      max_output_tokens: int | None = None,
   ):
     """Initializes the instance.
 
@@ -327,6 +395,8 @@ class AbstractConversation(abc.ABC):
         extra_context: Extra context for the chat template.
         sampler_config: Configuration for the sampling process. If None, then
           uses the engine's default values.
+        lora_config: Configuration for LoRA adapters.
+        max_output_tokens: The maximum number of output tokens.
     """
     self.messages = messages or []
     self.tools = tools or []
@@ -334,6 +404,8 @@ class AbstractConversation(abc.ABC):
     self.automatic_tool_calling = automatic_tool_calling
     self.extra_context = extra_context or {}
     self.sampler_config = sampler_config
+    self.lora_config = lora_config
+    self.max_output_tokens = max_output_tokens
 
   def __enter__(self) -> AbstractConversation:
     """Initializes the conversation."""
@@ -459,6 +531,10 @@ class AbstractBenchmark(abc.ABC):
         it.
       bos_token_id: The BOS token id for the model if one is configured.
       eos_token_ids: Stop token sequences configured for the model.
+      prompt: The custom prompt string to tokenize and run. If the tokenized
+        prompt is shorter than `prefill_tokens`, the remaining tokens are
+        padded with zero. If it is longer, the prompt is truncated to
+        `prefill_tokens`.
   """
 
   model_path: str
@@ -468,6 +544,7 @@ class AbstractBenchmark(abc.ABC):
   max_num_tokens: int | None = None
   cache_dir: str = ""
   enable_speculative_decoding: bool | None = None
+  prompt: str = "How are you"
 
   @abc.abstractmethod
   def run(self) -> BenchmarkInfo:

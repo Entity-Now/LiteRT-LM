@@ -307,6 +307,14 @@ internal object LiteRtLmJni {
   ): String
 
   /**
+   * Renders the preface into a string for testing purposes.
+   *
+   * @param conversationPointer A pointer to the native conversation instance.
+   * @return The rendered preface string.
+   */
+  external fun nativeConversationRenderPrefaceIntoString(conversationPointer: Long): String
+
+  /**
    * Callback for the nativeSendMessageAsync.
    *
    * <p>Keep the data type simple (string) to avoid constructing complex JVM object in native layer.

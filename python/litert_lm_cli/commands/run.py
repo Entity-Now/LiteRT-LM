@@ -24,6 +24,7 @@ import prompt_toolkit
 from prompt_toolkit import key_binding
 
 import litert_lm
+from litert_lm_cli import cli_helpers
 from litert_lm_cli import common
 from litert_lm_cli import help_formatter
 from litert_lm_cli import huggingface_download
@@ -173,7 +174,7 @@ def run_interactive(
     model_obj: model.Model,
     *,
     is_android: bool = False,
-    backend: str = "cpu",
+    backend: str | None = None,
     preset: str | None = None,
     prompt: str | None = None,
     enable_speculative_decoding: bool | None = None,
@@ -187,7 +188,7 @@ def run_interactive(
     top_p: float | None = None,
     temperature: float | None = None,
     seed: int | None = None,
-    cache: str = "disk",
+    cache: str | None = None,
     cpu_thread_count: int | None = None,
 ) -> None:
   """Runs the model interactively or with a single prompt."""
@@ -358,7 +359,7 @@ def run_interactive(
     # Run directly from a HuggingFace repository
     litert-lm run --from-huggingface-repo org/repo model.litertlm""",
 )
-@click.argument("model_reference")
+@click.argument("model_reference", required=False)
 @click.option(
     "--prompt", default=None, help="A single prompt to run once and exit."
 )
@@ -398,15 +399,21 @@ def run_interactive(
 )
 @click.option(
     "--vision-backend",
-    type=click.Choice(["cpu", "gpu", ""], case_sensitive=False),
+    type=click.Choice(["cpu", "gpu"], case_sensitive=False),
     default=None,
-    help="The backend to use for vision encoding.",
+    help=(
+        "The backend to use for vision encoding. If not set, use the model's"
+        " configured value."
+    ),
 )
 @click.option(
     "--audio-backend",
-    type=click.Choice(["cpu", "gpu", ""], case_sensitive=False),
+    type=click.Choice(["cpu", "gpu"], case_sensitive=False),
     default=None,
-    help="The backend to use for audio encoding.",
+    help=(
+        "The backend to use for audio encoding. If not set, use the model's"
+        " configured value."
+    ),
 )
 @click.option(
     "--attachment",
@@ -455,10 +462,10 @@ def run_interactive(
 )
 @common.common_inference_options
 def run(
-    model_reference: str,
+    model_reference: str | None = None,
     prompt: str | None = None,
     preset: str | None = None,
-    backend: str = "cpu",
+    backend: str | None = None,
     android: bool = False,
     enable_speculative_decoding: bool | None = None,
     verbose: bool = False,
@@ -474,7 +481,7 @@ def run(
     top_p: float | None = None,
     temperature: float | None = None,
     seed: int | None = None,
-    cache: str = "disk",
+    cache: str | None = None,
     cpu_thread_count: int | None = None,
 ) -> None:
   r"""Runs a LiteRT-LM model interactively or with a single prompt.
@@ -573,6 +580,11 @@ def run(
 
   if verbose:
     litert_lm.set_min_log_severity(litert_lm.LogSeverity.VERBOSE)
+
+  model_reference = model_reference or cli_helpers.resolve_model_file(
+      from_huggingface_repo,
+      huggingface_token,
+  )
 
   if from_huggingface_repo:
     model_path = huggingface_download.download_from_huggingface(

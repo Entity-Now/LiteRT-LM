@@ -20,7 +20,6 @@
 #include <memory>
 #include <optional>
 #include <ostream>
-#include <string>
 #include <utility>
 #include <vector>
 
@@ -334,8 +333,11 @@ class LlmLiteRtNpuCompiledModelExecutor : public LlmExecutor {
       std::vector<const uint8_t*> ple_table_ptrs = {},
       std::vector<HWQuantizationParams> ple_quant_params = {},
       std::vector<float> ple_per_tensor_scales = {}, int num_tables = 0,
+      int ple_embedding_dim = 0,
       litert::ElementType output_type = litert::ElementType::None,
-      float final_scale = 1.0f, int32_t final_zero_point = 0,
+      litert::ElementType ple_table_element_type = litert::ElementType::None,
+      float mul_scale = 1.0f, float output_scale = 1.0f,
+      int32_t final_zero_point = 0,
       absl::flat_hash_map<absl::string_view, HWQuantParams> kv_quant_params =
           {},
       SpeculativeDecodingType speculative_decoding_type =
@@ -360,8 +362,11 @@ class LlmLiteRtNpuCompiledModelExecutor : public LlmExecutor {
         ple_quant_params_(std::move(ple_quant_params)),
         ple_per_tensor_scales_(std::move(ple_per_tensor_scales)),
         num_tables_(num_tables),
+        ple_embedding_dim_(ple_embedding_dim),
         output_type_(output_type),
-        final_scale_(final_scale),
+        ple_table_element_type_(ple_table_element_type),
+        mul_scale_(mul_scale),
+        output_scale_(output_scale),
         final_zero_point_(final_zero_point),
         speculative_decoding_type_(speculative_decoding_type),
         drafter_context_(std::move(drafter_context)),
@@ -652,8 +657,11 @@ class LlmLiteRtNpuCompiledModelExecutor : public LlmExecutor {
   std::vector<HWQuantizationParams> ple_quant_params_;
   std::vector<float> ple_per_tensor_scales_;
   int num_tables_ = 0;
+  int ple_embedding_dim_ = 0;
   litert::ElementType output_type_ = litert::ElementType::None;
-  float final_scale_ = 1.0f;
+  litert::ElementType ple_table_element_type_ = litert::ElementType::None;
+  float mul_scale_ = 1.0f;
+  float output_scale_ = 1.0f;
   int32_t final_zero_point_ = 0;
 
   // MTP / Speculative Decoding members.
@@ -683,8 +691,8 @@ class LlmLiteRtNpuCompiledModelExecutor : public LlmExecutor {
   // for next prefill or decode steps.
   litert::lm::ProcessedTokens processed_tokens_;
 
-  // Tracks whether a decode step was run so we know how to update constrained
-  // decoding state.
+  // Tracks whether a decode step was run so we know how to update the logits
+  // processor state.
   bool ran_decode_ = false;
 };
 

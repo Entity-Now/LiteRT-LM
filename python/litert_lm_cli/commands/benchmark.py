@@ -19,6 +19,7 @@ import traceback
 import click
 
 import litert_lm
+from litert_lm_cli import cli_helpers
 from litert_lm_cli import common
 from litert_lm_cli import help_formatter
 from litert_lm_cli import huggingface_download
@@ -39,10 +40,10 @@ def run_benchmark(
     prefill_tokens: int = 256,
     decode_tokens: int = 256,
     is_android: bool = False,
-    backend: str = "cpu",
+    backend: str | None = None,
     enable_speculative_decoding: bool | None = None,
     max_num_tokens: int | None = None,
-    cache: str = "disk",
+    cache: str | None = None,
     cpu_thread_count: int | None = None,
 ) -> None:
   """Benchmarks the model."""
@@ -58,7 +59,7 @@ def run_benchmark(
 
   try:
     backend_val = model.parse_backend(
-        backend, cpu_thread_count=cpu_thread_count
+        backend, model_obj=model_obj, cpu_thread_count=cpu_thread_count
     )
     cache_dir_val = common.cache_dir_value_from_cache_mode(cache)
 
@@ -99,7 +100,7 @@ def run_benchmark(
       spec_dec_str = "true"
     elif enable_speculative_decoding is False:
       spec_dec_str = "false"
-    click.echo(f"Cache                      : {cache}")
+    click.echo(f"Cache                      : {cache or 'disk'}")
     click.echo(f"Speculative decoding       : {spec_dec_str}")
     if is_android:
       click.echo("Target                     : Android")
@@ -139,7 +140,7 @@ def run_benchmark(
     # Benchmark directly from a HuggingFace repository
     litert-lm benchmark --from-huggingface-repo org/repo model.litertlm""",
 )
-@click.argument("model_reference")
+@click.argument("model_reference", required=False)
 @click.option(
     "-p",
     "--prefill-tokens",
@@ -165,17 +166,17 @@ def run_benchmark(
 )
 @common.common_inference_options
 def benchmark(
-    model_reference: str,
+    model_reference: str | None = None,
     prefill_tokens: int = 256,
     decode_tokens: int = 256,
-    backend: str = "cpu",
+    backend: str | None = None,
     android: bool = False,
     enable_speculative_decoding: bool | None = None,
     verbose: bool = False,
     from_huggingface_repo: str | None = None,
     huggingface_token: str | None = None,
     max_num_tokens: int | None = None,
-    cache: str = "disk",
+    cache: str | None = None,
     cpu_thread_count: int | None = None,
 ) -> None:
   """Benchmarks a LiteRT-LM model.
@@ -199,6 +200,11 @@ def benchmark(
   """
   if verbose:
     litert_lm.set_min_log_severity(litert_lm.LogSeverity.VERBOSE)
+
+  model_reference = model_reference or cli_helpers.resolve_model_file(
+      from_huggingface_repo,
+      huggingface_token,
+  )
 
   if from_huggingface_repo:
     model_path = huggingface_download.download_from_huggingface(

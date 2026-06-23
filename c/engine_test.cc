@@ -14,6 +14,7 @@
 
 #include "c/engine.h"
 
+#include <fcntl.h>
 #include <algorithm>
 #include <cstring>
 #include <memory>
@@ -282,6 +283,26 @@ TEST(EngineCTest, SetEnableSpeculativeDecoding) {
                    .GetAdvancedSettings()
                    .value_or(litert::lm::AdvancedSettings())
                    .enable_speculative_decoding);
+}
+
+TEST(EngineCTest, CreateSettingsFromRawFileDescriptor) {
+  const std::string task_path = GetTestdataPath(
+      "litert_lm/runtime/testdata/test_lm_new_metadata.task");
+  int fd = open(task_path.c_str(), O_RDONLY);
+  ASSERT_GE(fd, 0);
+  EngineSettingsPtr settings(
+      litert_lm_engine_settings_create_from_raw_file_descriptor(
+          fd, "cpu", /* vision_backend_str */ nullptr,
+          /* audio_backend_str */ nullptr),
+      &litert_lm_engine_settings_delete);
+  ASSERT_NE(settings, nullptr);
+  EXPECT_TRUE(settings->settings->GetMainExecutorSettings()
+                  .GetModelAssets()
+                  .HasScopedFile());
+  EXPECT_FALSE(settings->settings->GetMainExecutorSettings()
+                   .GetModelAssets()
+                   .GetPath()
+                   .ok());
 }
 
 TEST(EngineCTest, CreateSessionConfigWithSamplerParams) {
@@ -961,6 +982,43 @@ TEST(EngineCTest, ConversationSendMessage) {
   const char* response_str = litert_lm_json_response_get_string(response.get());
   ASSERT_NE(response_str, nullptr);
   EXPECT_GT(strlen(response_str), 0);
+}
+
+TEST(EngineCTest, ConversationRenderPreface) {
+  const std::string task_path = GetTestdataPath(
+      "litert_lm/runtime/testdata/test_lm.litertlm");
+
+  EngineSettingsPtr settings(
+      litert_lm_engine_settings_create(task_path.c_str(), "cpu",
+                                       /* vision_backend_str */ nullptr,
+                                       /* audio_backend_str */ nullptr),
+      &litert_lm_engine_settings_delete);
+  ASSERT_NE(settings, nullptr);
+  litert_lm_engine_settings_set_max_num_tokens(settings.get(), 16);
+
+  EnginePtr engine(litert_lm_engine_create(settings.get()),
+                   &litert_lm_engine_delete);
+  ASSERT_NE(engine, nullptr);
+
+  ConversationConfigPtr conversation_config(
+      litert_lm_conversation_config_create(),
+      &litert_lm_conversation_config_delete);
+  ASSERT_NE(conversation_config, nullptr);
+
+  const char* messages_json =
+      R"([{"role": "system", "content": "You are a helpful assistant."}])";
+  litert_lm_conversation_config_set_messages(conversation_config.get(),
+                                             messages_json);
+
+  ConversationPtr conversation(
+      litert_lm_conversation_create(engine.get(), conversation_config.get()),
+      &litert_lm_conversation_delete);
+  ASSERT_NE(conversation, nullptr);
+
+  const char* rendered =
+      litert_lm_conversation_render_preface_to_string(conversation.get());
+  ASSERT_NE(rendered, nullptr);
+  EXPECT_THAT(rendered, testing::HasSubstr("You are a helpful assistant."));
 }
 
 TEST(EngineCTest, ConversationSendMessageWithConfig) {

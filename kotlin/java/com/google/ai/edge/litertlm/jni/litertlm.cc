@@ -26,6 +26,7 @@
 #include "absl/log/absl_log.h"  // from @com_google_absl
 #include "absl/status/status.h"  // from @com_google_absl
 #include "absl/status/statusor.h"  // from @com_google_absl
+#include "absl/strings/str_cat.h"  // from @com_google_absl
 #include "absl/time/time.h"  // from @com_google_absl
 #include "nlohmann/json_fwd.hpp"  // from @nlohmann_json
 #include "litert/cc/internal/scoped_file.h"  // from @litert
@@ -1214,6 +1215,25 @@ LITERTLM_JNIEXPORT jstring JNICALL JNI_METHOD(
     ThrowLiteRtLmJniException(
         env, "Failed to call nativeConversationRenderMessageIntoString: " +
                  response.status().ToString());
+    return nullptr;
+  }
+
+  return NewStringStandardUTF(env, *response);
+}
+
+LITERTLM_JNIEXPORT jstring JNICALL JNI_METHOD(
+    nativeConversationRenderPrefaceIntoString)(JNIEnv* env, jclass thiz,
+                                               jlong conversation_pointer) {
+  Conversation* conversation =
+      reinterpret_cast<Conversation*>(conversation_pointer);
+
+  auto response =
+      conversation->RenderPrefaceIntoString(litert::lm::OptionalArgs());
+  if (!response.ok()) {
+    ThrowLiteRtLmJniException(
+        env, absl::StrCat(
+                 "Failed to call nativeConversationRenderPrefaceIntoString: ",
+                 response.status().ToString()));
     return nullptr;
   }
 

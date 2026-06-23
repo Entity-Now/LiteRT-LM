@@ -23,7 +23,7 @@ load(
     "export_lrt_runtime_only_script",
 )
 
-LITERT_MIN_IOS_VERSION = "14.0"
+LITERT_MIN_IOS_VERSION = "15.0"
 
 LITERT_MIN_MACOS_VERSION = "10.15"
 
@@ -90,7 +90,6 @@ cc_test(
     deps = [
         ":tokenizer",
         "@com_google_googletest//:gtest_main",
-        "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -226,6 +225,7 @@ cc_library(
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
         "//runtime/util:litert_status_util",
         "//runtime/util:memory_mapped_file",
