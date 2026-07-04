@@ -14,6 +14,19 @@
 
 package(default_visibility = ["//visibility:public"])
 
+_LITERT_RUNTIME_LIBS = [
+    "libGemmaModelConstraintProvider",
+    "libLiteRt",
+    "libLiteRtTopKWebGpuSampler",
+    "libLiteRtWebGpuAccelerator",
+    "libwebgpu_dawn",
+]
+
+_LITERT_METAL_RUNTIME_LIBS = [
+    "libLiteRtMetalAccelerator",
+    "libLiteRtTopKMetalSampler",
+]
+
 genrule(
     name = "copy_litert_lm_so",
     srcs = ["//c:litert-lm"],
@@ -48,6 +61,29 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+filegroup(
+    name = "litert_lm_runtime_libs",
+    srcs = select({
+        "@platforms//os:macos": [
+            "//prebuilt/macos_arm64:" + lib + ".dylib"
+            for lib in _LITERT_RUNTIME_LIBS + _LITERT_METAL_RUNTIME_LIBS
+        ],
+        "@platforms//os:windows": [
+            "//prebuilt/windows_x86_64:" + lib + ".dll"
+            for lib in _LITERT_RUNTIME_LIBS
+        ],
+        "//build_config:linux_arm64": [
+            "//prebuilt/linux_arm64:" + lib + ".so"
+            for lib in _LITERT_RUNTIME_LIBS
+        ],
+        "//conditions:default": [
+            "//prebuilt/linux_x86_64:" + lib + ".so"
+            for lib in _LITERT_RUNTIME_LIBS
+        ],
+    }),
+    visibility = ["//visibility:public"],
+)
+
 alias(
     name = "CLiteRTLM",
     actual = ":litert_lm_native",
@@ -59,6 +95,7 @@ genrule(
     name = "CLiteRTLM_package",
     srcs = [
         ":CLiteRTLM",
+        ":litert_lm_runtime_libs",
         "//c:engine.h",
         "//schema/capabilities:capabilities_c.h",
     ],
@@ -69,6 +106,11 @@ genrule(
         
         # Copy the native library
         cp $(location :CLiteRTLM) CLiteRTLM_csharp/native/
+
+        # Copy LiteRT runtime sidecar libraries loaded by GPU backends.
+        for runtime_lib in $(locations :litert_lm_runtime_libs); do
+          cp "$$runtime_lib" CLiteRTLM_csharp/native/
+        done
         
         # Copy headers
         cp $(location //c:engine.h) CLiteRTLM_csharp/include/
