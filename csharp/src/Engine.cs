@@ -73,6 +73,9 @@ namespace LiteRTLM.Core
                     {
                         LiteRtLmNative.litert_lm_engine_settings_set_max_num_tokens(settings, EngineConfig.MaxNumTokens.Value);
                     }
+                    ApplyBackendSettings(settings, EngineConfig.Backend, isAudioBackend: false);
+                    ApplyBackendSettings(settings, EngineConfig.AudioBackend, isAudioBackend: true);
+
                     if (!string.IsNullOrEmpty(EngineConfig.CacheDir))
                     {
                         LiteRtLmNative.litert_lm_engine_settings_set_cache_dir(settings, EngineConfig.CacheDir);
@@ -132,6 +135,36 @@ namespace LiteRTLM.Core
                 {
                     LiteRtLmNative.litert_lm_engine_settings_delete(settings);
                 }
+            }
+        }
+
+        private static void ApplyBackendSettings(IntPtr settings, Backend backend, bool isAudioBackend)
+        {
+            if (backend == null)
+            {
+                return;
+            }
+
+            if (backend.ThreadCount.HasValue)
+            {
+                if (backend.ThreadCount.Value <= 0)
+                {
+                    throw new LiteRTLMConfigException("CPU backend thread count must be positive.");
+                }
+
+                if (isAudioBackend)
+                {
+                    LiteRtLmNative.litert_lm_engine_settings_set_audio_num_threads(settings, backend.ThreadCount.Value);
+                }
+                else
+                {
+                    LiteRtLmNative.litert_lm_engine_settings_set_num_threads(settings, backend.ThreadCount.Value);
+                }
+            }
+
+            if (!string.IsNullOrEmpty(backend.NativeLibraryDir))
+            {
+                LiteRtLmNative.litert_lm_engine_settings_set_litert_dispatch_lib_dir(settings, backend.NativeLibraryDir);
             }
         }
 

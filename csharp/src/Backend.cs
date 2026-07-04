@@ -28,7 +28,7 @@ namespace LiteRTLM.Core
         }
 
         public static Backend Cpu(int? threadCount = null) => new Backend("cpu", threadCount);
-        public static Backend Gpu() => new Backend("gpu");
+        public static Backend Gpu(string nativeLibraryDir = null) => new Backend("gpu", null, nativeLibraryDir);
         public static Backend Npu(string nativeLibraryDir = null) => new Backend("npu", null, nativeLibraryDir);
     }
 }

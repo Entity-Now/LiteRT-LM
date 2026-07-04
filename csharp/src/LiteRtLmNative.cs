@@ -181,6 +181,14 @@ namespace LiteRTLM.Core
             IntPtr settings, int max_num_tokens);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void litert_lm_engine_settings_set_num_threads(
+            IntPtr settings, int num_threads);
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void litert_lm_engine_settings_set_audio_num_threads(
+            IntPtr settings, int num_threads);
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void litert_lm_engine_settings_set_parallel_file_section_loading(
             IntPtr settings, [MarshalAs(UnmanagedType.U1)] bool parallel_file_section_loading);
 

@@ -60,6 +60,19 @@ namespace LiteRTLM.Core
             _toolManager = toolManager;
         }
 
+        public Conversation Clone()
+        {
+            CheckIsAlive();
+
+            IntPtr clonedHandle = LiteRtLmNative.litert_lm_conversation_clone(_handle);
+            if (clonedHandle == IntPtr.Zero)
+            {
+                throw new LiteRTLMConversationException("Failed to clone conversation.");
+            }
+
+            return new Conversation(clonedHandle, _toolManager);
+        }
+
         public async Task<Message> SendMessage(Message message, Dictionary<string, object> extraContext = null)
         {
             CheckIsAlive();
