@@ -20,16 +20,19 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: linux
-            output: bazel-bin/csharp/libCLiteRTLM.so
-            artifact-name: libCLiteRTLM.so
+            output: |
+              bazel-bin/csharp/liblitert-lm.so
+              prebuilt/linux_x86_64/*.so
           - os: macos-latest
             platform: macos
-            output: bazel-bin/csharp/libCLiteRTLM.dylib
-            artifact-name: libCLiteRTLM.dylib
+            output: |
+              bazel-bin/csharp/liblitert-lm.dylib
+              prebuilt/macos_arm64/*.dylib
           - os: windows-latest
             platform: windows
-            output: bazel-bin/csharp/CLiteRTLM.dll
-            artifact-name: CLiteRTLM.dll
+            output: |
+              bazel-bin/csharp/litert-lm.dll
+              prebuilt/windows_x86_64/*.dll
 
     steps:
       - name: Checkout Code
@@ -75,6 +78,7 @@ jobs:
         with:
           name: native-${{ matrix.platform }}
           path: ${{ matrix.output }}
+          if-no-files-found: error
 
   build-csharp:
     name: Build C# Wrapper
