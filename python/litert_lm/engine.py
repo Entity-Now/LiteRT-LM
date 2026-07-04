@@ -24,7 +24,7 @@ import warnings
 from . import interfaces
 from . import tools as litert_tools
 from ._ffi import _get_lib
-
+from ._ffi import ActivationDataType
 from ._messages import Message
 from .conversation import Conversation
 from .session import Session
@@ -55,6 +55,7 @@ class Engine(interfaces.AbstractEngine):
           interfaces.Backend | type[interfaces.Backend]
       ) = interfaces.Backend.CPU(),
       max_num_tokens: int | None = None,
+      max_num_images: int | None = None,
       cache_dir: str = "",
       vision_backend: (
           interfaces.Backend | type[interfaces.Backend] | None
@@ -63,6 +64,7 @@ class Engine(interfaces.AbstractEngine):
           interfaces.Backend | type[interfaces.Backend] | None
       ) = None,
       lora_rank_config: interfaces.LoraRankConfig | None = None,
+      activation_data_type: ActivationDataType | None = None,
       **kwargs,
   ):
     backend = _normalize_backend(backend)
@@ -73,10 +75,12 @@ class Engine(interfaces.AbstractEngine):
         model_path=model_path,
         backend=backend,
         max_num_tokens=max_num_tokens,
+        max_num_images=max_num_images,
         cache_dir=cache_dir,
         vision_backend=vision_backend,
         audio_backend=audio_backend,
         lora_rank_config=lora_rank_config,
+        activation_data_type=activation_data_type,
         **kwargs,
     )
 
@@ -124,6 +128,10 @@ class Engine(interfaces.AbstractEngine):
       self._lib.litert_lm_engine_settings_set_max_num_tokens(
           settings, self.max_num_tokens
       )
+    if self.max_num_images is not None:
+      self._lib.litert_lm_engine_settings_set_max_num_images(
+          settings, self.max_num_images
+      )
     if self.cache_dir:
       self._lib.litert_lm_engine_settings_set_cache_dir(
           settings, self.cache_dir
@@ -131,6 +139,10 @@ class Engine(interfaces.AbstractEngine):
     if self.enable_speculative_decoding is not None:
       self._lib.litert_lm_engine_settings_set_enable_speculative_decoding(
           settings, self.enable_speculative_decoding
+      )
+    if self.activation_data_type is not None:
+      self._lib.litert_lm_engine_settings_set_activation_data_type(
+          settings, self.activation_data_type.value
       )
     lora_rank = (
         self.lora_rank_config.lora_rank if self.lora_rank_config else None
@@ -212,10 +224,13 @@ class Engine(interfaces.AbstractEngine):
   ) -> Conversation:
     session_config = self._lib.litert_lm_session_config_create()
     if sampler_config:
-      params = _sampler_config_to_params(sampler_config)
-      self._lib.litert_lm_session_config_set_sampler_params(
-          session_config, ctypes.byref(params)
-      )
+      params = _sampler_config_to_params(self._lib, sampler_config)
+      try:
+        self._lib.litert_lm_session_config_set_sampler_params(
+            session_config, params
+        )
+      finally:
+        self._lib.litert_lm_sampler_params_delete(params)
 
     lora_path = lora_config.lora_path if lora_config else None
     audio_lora_path = lora_config.audio_lora_path if lora_config else None
@@ -334,10 +349,13 @@ class Engine(interfaces.AbstractEngine):
     )
 
     if sampler_config:
-      params = _sampler_config_to_params(sampler_config)
-      self._lib.litert_lm_session_config_set_sampler_params(
-          session_config, ctypes.byref(params)
-      )
+      params = _sampler_config_to_params(self._lib, sampler_config)
+      try:
+        self._lib.litert_lm_session_config_set_sampler_params(
+            session_config, params
+        )
+      finally:
+        self._lib.litert_lm_sampler_params_delete(params)
 
     if max_output_tokens is not None:
       self._lib.litert_lm_session_config_set_max_output_tokens(

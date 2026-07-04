@@ -21,10 +21,12 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include "absl/base/log_severity.h"  // from @com_google_absl
+#include "absl/container/flat_hash_set.h"  // from @com_google_absl
 #include "absl/log/log_entry.h"  // from @com_google_absl
 #include "absl/log/log_sink.h"  // from @com_google_absl
 #include "absl/status/status.h"  // from @com_google_absl
@@ -32,6 +34,8 @@
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/synchronization/mutex.h"  // from @com_google_absl
 #include "nlohmann/json.hpp"  // from @nlohmann_json
+#include "runtime/components/logits_processor/repetition_penalty_config.h"
+#include "runtime/components/logits_processor/suppress_tokens_config.h"
 #include "runtime/engine/engine.h"
 #include "runtime/engine/engine_settings.h"
 #include "runtime/engine/io_types.h"
@@ -122,6 +126,9 @@ struct LiteRtLmSettings {
   bool sampler_handles_input = true;
   ConvType conv_type = ConvType::kAuto;
   bool cache_compiled_shaders_only = false;
+  RepetitionPenaltyConfig repetition_penalty_config =
+      RepetitionPenaltyConfig::Default();
+  SuppressTokensConfig suppress_tokens_config = SuppressTokensConfig::Default();
   std::string constraint_regex = "";
   bool use_submodel = false;
   bool enable_speculative_decoding = false;
@@ -158,6 +165,26 @@ SessionConfig CreateSessionConfig(const LiteRtLmSettings& settings);
 // the inference. Results from each iteration is saved in the vector.
 absl::Status RunLiteRtLm(const LiteRtLmSettings& settings,
                          std::vector<LitertLmMetrics>* metrics = nullptr);
+
+// Returns true if stdout is a TTY and colors should be used.
+bool UseColor();
+
+// Prints a JSON-formatted message to stdout and captures the text content.
+// Handles streaming and non-streaming modes, as well as multiple channels
+// (e.g. thinking vs final answer) and applies color coding if UseColor() is
+// true.
+//
+// Parameters:
+//   - message: The JSON message to print.
+//   - captured_output: Stream to collect the raw text content (without tags or
+//   colors).
+//   - active_channel: In streaming mode, tracks the currently active channel.
+//                     Must be persisted between calls for the same stream.
+//   - streaming: Set to true if printing chunks as they arrive.
+absl::Status PrintMessage(const nlohmann::ordered_json& message,
+                          std::stringstream& captured_output,
+                          std::string* active_channel = nullptr,
+                          bool streaming = false);
 
 }  // namespace lm
 }  // namespace litert

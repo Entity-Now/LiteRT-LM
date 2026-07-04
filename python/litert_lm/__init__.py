@@ -14,6 +14,7 @@
 
 """LiteRT LM is a library for running GenAI models on devices."""
 
+from ._ffi import ActivationDataType
 from ._ffi import LogSeverity
 from ._ffi import set_min_log_severity
 from ._messages import Content
@@ -44,6 +45,7 @@ __all__ = (
     "AbstractConversation",
     "AbstractEngine",
     "AbstractSession",
+    "ActivationDataType",
     "Backend",
     "Benchmark",
     "BenchmarkInfo",

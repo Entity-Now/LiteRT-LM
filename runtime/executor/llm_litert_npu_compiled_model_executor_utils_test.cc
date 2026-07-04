@@ -23,7 +23,6 @@
 #include <utility>
 #include <vector>
 
-#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/container/flat_hash_map.h"  // from @com_google_absl
 #include "absl/status/statusor.h"  // from @com_google_absl
@@ -775,6 +774,64 @@ TEST_F(ExecutorUtilsTest, HWMaskUpdateGemma3Decode) {
 
   // Check new token part (at index 1280)
   EXPECT_EQ(global_lock.second[1280], valid_val);
+}
+
+TEST_F(ExecutorUtilsTest, HWMaskUpdateWithValidMask) {
+  int seq_q = 128;
+  int seq_k = 1408;
+  int time_step = 0;
+
+  absl::flat_hash_map<absl::string_view, TensorBuffer> in_buffers;
+  std::vector<int32_t> time_step_data = {time_step};
+  in_buffers.emplace("time_step",
+                     CreateTensorBuffer(time_step_data, ElementType::Int32));
+
+  // 50 valid tokens in valid_mask, rest are padding (false)
+  std::vector<uint8_t> valid_mask_data(seq_q, false);
+  for (int i = 0; i < 50; ++i) {
+    valid_mask_data[i] = true;
+  }
+  in_buffers.emplace("valid_mask",
+                     CreateTensorBuffer(valid_mask_data, ElementType::Bool));
+
+  // We pass input_tokens with ALL valid (0) to ensure it uses valid_mask
+  // instead
+  std::vector<int32_t> input_tokens_data(seq_q, 0);
+  in_buffers.emplace("input_tokens",
+                     CreateTensorBuffer(input_tokens_data, ElementType::Int32));
+
+  absl::flat_hash_map<absl::string_view, TensorBuffer> out_buffers;
+  std::vector<int8_t> mask_data(seq_q * seq_k, 0);
+  out_buffers.emplace("mask_local",
+                      CreateTensorBufferWithDims(mask_data, ElementType::Int8,
+                                                 {1, seq_q, seq_k}));
+  out_buffers.emplace("mask_global",
+                      CreateTensorBufferWithDims(mask_data, ElementType::Int8,
+                                                 {1, seq_q, seq_k}));
+
+  ASSERT_TRUE(HWMaskUpdate(in_buffers, out_buffers).ok());
+
+  auto global_lock_expected = TensorBufferScopedLock::Create<int8_t>(
+      out_buffers.at("mask_global"), TensorBuffer::LockMode::kRead);
+  ASSERT_TRUE(global_lock_expected);
+  auto& global_lock = *global_lock_expected;
+
+  int8_t valid_val = 127;
+  int8_t masked_val = -128;
+
+  // Check row q = 100
+  // k_rel = k - 1280.
+  // We expect valid_val for k_rel < 50.
+  // We expect masked_val for 50 <= k_rel <= 100.
+  int64_t row_offset = 100 * seq_k;
+  for (int k_rel = 0; k_rel < 50; ++k_rel) {
+    EXPECT_EQ(global_lock.second[row_offset + 1280 + k_rel], valid_val)
+        << "k_rel " << k_rel;
+  }
+  for (int k_rel = 50; k_rel <= 100; ++k_rel) {
+    EXPECT_EQ(global_lock.second[row_offset + 1280 + k_rel], masked_val)
+        << "k_rel " << k_rel;
+  }
 }
 
 TEST_F(ExecutorUtilsTest, HWPerLayerEmbeddingLookupFloat32) {
@@ -1546,5 +1603,26 @@ TEST(ExecutorUtilsQuantizeTest, QuantizeInt8) {
   EXPECT_EQ(Quantize<int8_t>(-1000.0f, 1.0f, 0), -128);
 }
 
+TEST(ExecutorUtilsFormatFirstNTest, FormatFirstNEmpty) {
+  std::vector<int> empty;
+  EXPECT_EQ(FormatFirstN<int>(empty), "[]");
+}
+
+TEST(ExecutorUtilsFormatFirstNTest, FormatFirstNLessOrEqualThanLimit) {
+  std::vector<int> data = {1, 2, 3, 4, 5};
+  EXPECT_EQ(FormatFirstN<int>(data, 5), "[1, 2, 3, 4, 5]");
+  EXPECT_EQ(FormatFirstN<int>(data, 10), "[1, 2, 3, 4, 5]");
+}
+
+TEST(ExecutorUtilsFormatFirstNTest, FormatFirstNMoreThanLimit) {
+  std::vector<int> data = {1, 2, 3, 4, 5, 6};
+  EXPECT_EQ(FormatFirstN<int>(data, 3), "[1, 2, 3, ...]");
+  EXPECT_EQ(FormatFirstN<int>(data, 5), "[1, 2, 3, 4, 5, ...]");
+}
+
+TEST(ExecutorUtilsFormatFirstNTest, FormatFirstNFloat) {
+  std::vector<float> data = {1.5f, 2.5f, 3.5f};
+  EXPECT_EQ(FormatFirstN<float>(data, 2), "[1.5, 2.5, ...]");
+}
 }  // namespace
 }  // namespace litert::lm

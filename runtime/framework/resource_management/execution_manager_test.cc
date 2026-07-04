@@ -31,10 +31,11 @@
 #include "absl/synchronization/mutex.h"  // from @com_google_absl
 #include "absl/time/time.h"  // from @com_google_absl
 #include "litert/cc/litert_tensor_buffer.h"  // from @litert
+#include "support/tokenizer/tokenizer.h"  // from @litert
 #include "runtime/components/logits_processor/constrained_decoding/fake_constraint.h"
 #include "runtime/components/logits_processor/repetition_penalty_config.h"
+#include "runtime/components/logits_processor/suppress_tokens_config.h"
 #include "runtime/components/model_resources.h"
-#include "runtime/components/tokenizer.h"
 #include "runtime/engine/engine_settings.h"
 #include "runtime/engine/io_types.h"
 #include "runtime/executor/audio_executor.h"
@@ -49,6 +50,10 @@
 #include "runtime/util/test_utils.h"  // NOLINT
 
 namespace litert::lm {
+
+using Tokenizer = ::litert::support::Tokenizer;
+using TokenizerType = ::litert::support::TokenizerType;
+
 namespace {
 
 using ::testing::ElementsAre;
@@ -401,6 +406,7 @@ TEST_P(ExecutionManagerTest, AddDecodeTaskWithInternalSampler) {
   ASSERT_OK(execution_manager_->AddDecodeTask(
       session_id, decode_task_id,
       /*dependency_task_ids=*/{}, RepetitionPenaltyConfig::Default(),
+      SuppressTokensConfig::Default(),
       /*constraint=*/nullptr,
       /*cancelled=*/std::make_shared<std::atomic<bool>>(false),
       std::move(callback)));
@@ -461,6 +467,7 @@ TEST_P(ExecutionManagerTest, AddDecodeTaskWithExternalSampler) {
   ASSERT_OK(execution_manager_->AddDecodeTask(
       session_id, decode_task_id,
       /*dependency_task_ids=*/{}, RepetitionPenaltyConfig::Default(),
+      SuppressTokensConfig::Default(),
       /*constraint=*/nullptr,
       /*cancelled=*/std::make_shared<std::atomic<bool>>(false),
       std::move(callback)));
@@ -501,6 +508,7 @@ TEST_P(ExecutionManagerTest, CreateAndRunDependentTasks) {
   ASSERT_OK(execution_manager_->AddDecodeTask(
       session_id, task_b_id,
       /*dependency_task_ids=*/{task_a_id}, RepetitionPenaltyConfig::Default(),
+      SuppressTokensConfig::Default(),
       /*constraint=*/nullptr,
       /*cancelled=*/std::make_shared<std::atomic<bool>>(false),
       /*callback=*/nullptr));
@@ -602,6 +610,7 @@ TEST_P(ExecutionManagerTest, WaitUntilTaskDoneTimeout) {
   ASSERT_OK(execution_manager_->AddDecodeTask(
       session_id, task_id,
       /*dependency_task_ids=*/{}, RepetitionPenaltyConfig::Default(),
+      SuppressTokensConfig::Default(),
       /*constraint=*/nullptr,
       /*cancelled=*/std::make_shared<std::atomic<bool>>(false),
       /*callback=*/nullptr));
@@ -644,6 +653,7 @@ TEST_P(ExecutionManagerTest, WaitUntilAllDoneTimeout) {
   ASSERT_OK(execution_manager_->AddDecodeTask(
       session_id, task_id,
       /*dependency_task_ids=*/{}, RepetitionPenaltyConfig::Default(),
+      SuppressTokensConfig::Default(),
       /*constraint=*/nullptr,
       /*cancelled=*/std::make_shared<std::atomic<bool>>(false),
       /*callback=*/nullptr));
@@ -740,6 +750,7 @@ TEST_P(ExecutionManagerTest, CreateDependentTaskOnFailedTask) {
   ASSERT_OK(execution_manager_->AddDecodeTask(
       session_id, task_b_id,
       /*dependency_task_ids=*/{task_a_id}, RepetitionPenaltyConfig::Default(),
+      SuppressTokensConfig::Default(),
       /*constraint=*/nullptr,
       /*cancelled=*/std::make_shared<std::atomic<bool>>(false),
       [&](absl::StatusOr<Responses> responses) {
@@ -807,6 +818,7 @@ TEST_P(ExecutionManagerTest,
   ASSERT_OK(execution_manager_->AddDecodeTask(
       session_id, task_b_id,
       /*dependency_task_ids=*/{task_a_id}, repetition_penalty_config,
+      SuppressTokensConfig::Default(),
       /*constraint=*/nullptr,
       /*cancelled=*/std::make_shared<std::atomic<bool>>(false),
       std::move(callback)));
@@ -870,6 +882,7 @@ TEST_P(ExecutionManagerTest,
   ASSERT_OK(execution_manager_->AddDecodeTask(
       session_id, task_b_id,
       /*dependency_task_ids=*/{task_a_id}, repetition_penalty_config,
+      SuppressTokensConfig::Default(),
       /*constraint=*/nullptr,
       /*cancelled=*/std::make_shared<std::atomic<bool>>(false),
       std::move(callback)));
@@ -877,6 +890,127 @@ TEST_P(ExecutionManagerTest,
   EXPECT_OK(execution_manager_->WaitUntilDone(task_b_id, absl::Seconds(3)));
 
   EXPECT_THAT(response_texts, ElementsAre("4", "5"));
+}
+
+TEST_P(ExecutionManagerTest,
+       AddDecodeTaskWithSuppressTokensConfigWithInternalSampler) {
+  std::vector<std::vector<int>> prefill_tokens = {{1}, {0}};
+  std::vector<std::vector<int>> decode_tokens = {{4}, {4}, {5}, {5}, {6}};
+
+  auto fake_llm_executor = std::make_unique<FakeLlmExecutor>(
+      kVocabSize,
+      /*prefill_tokens=*/std::move(prefill_tokens),
+      /*decode_tokens=*/std::move(decode_tokens));
+  fake_llm_executor->SetDecodeLogitsOptions(
+      FakeLlmExecutor::DecodeLogitsOptions{.match_value = 10.0f,
+                                           .mismatch_value = -10.0f,
+                                           .end_token_id = 6,
+                                           .mismatch_end_token_value = 0.0f});
+
+  CreateExecutionManager(std::move(fake_llm_executor));
+
+  ASSERT_OK_AND_ASSIGN(auto session_config, CreateDefaultSessionConfig());
+  ASSERT_OK_AND_ASSIGN(const SessionId session_id,
+                       execution_manager_->RegisterNewSession(session_config));
+
+  std::vector<InputData> inputs;
+  ASSERT_OK_AND_ASSIGN(auto input_text,
+                       tokenizer_->TokenIdsToTensorBuffer({1}));
+  inputs.push_back(InputText(std::move(input_text)));
+  ASSERT_OK_AND_ASSIGN(const TaskId task_a_id,
+                       execution_manager_->GetNewTaskId());
+  ASSERT_OK(execution_manager_->AddPrefillTask(
+      session_id, task_a_id, std::move(inputs),
+      /*dependency_task_ids=*/{},
+      /*cancelled=*/std::make_shared<std::atomic<bool>>(false),
+      /*callback=*/nullptr));
+
+  std::vector<std::string> response_texts;
+  absl::AnyInvocable<void(absl::StatusOr<Responses>)> callback =
+      [&response_texts](absl::StatusOr<Responses> responses) {
+        ASSERT_OK(responses);
+        if (!responses->GetTexts().empty()) {
+          response_texts.push_back(responses->GetTexts()[0]);
+        }
+      };
+
+  // Suppress token "5".
+  ASSERT_OK_AND_ASSIGN(const TaskId task_b_id,
+                       execution_manager_->GetNewTaskId());
+  ASSERT_OK(execution_manager_->AddDecodeTask(
+      session_id, task_b_id,
+      /*dependency_task_ids=*/{task_a_id}, RepetitionPenaltyConfig::Default(),
+      SuppressTokensConfig(/*suppress_tokens=*/{
+          5,
+      }),
+      /*constraint=*/nullptr,
+      /*cancelled=*/std::make_shared<std::atomic<bool>>(false),
+      std::move(callback)));
+
+  EXPECT_OK(execution_manager_->WaitUntilDone(task_b_id, absl::Seconds(3)));
+
+  EXPECT_THAT(response_texts, ElementsAre("4", "4"));
+}
+
+TEST_P(ExecutionManagerTest,
+       AddDecodeTaskWithSuppressTokensConfigWithExternalSampler) {
+  std::vector<std::vector<int>> prefill_tokens = {{1}, {6}};
+  std::vector<std::vector<int>> decode_tokens = {{4}, {4}, {5}, {5}, {6}};
+
+  auto fake_llm_executor = std::make_unique<FakeLlmExecutor>(
+      kVocabSize,
+      /*prefill_tokens=*/std::move(prefill_tokens),
+      /*decode_tokens=*/std::move(decode_tokens));
+  fake_llm_executor->SetDecodeLogitsOptions(
+      FakeLlmExecutor::DecodeLogitsOptions{.match_value = 10.0f,
+                                           .mismatch_value = -10.0f,
+                                           .end_token_id = 6,
+                                           .mismatch_end_token_value = 0.0f});
+
+  CreateExecutionManager(std::move(fake_llm_executor));
+
+  ASSERT_OK_AND_ASSIGN(auto session_config, CreateDefaultSessionConfig(
+                                                /*use_external_sampler=*/true));
+  ASSERT_OK_AND_ASSIGN(const SessionId session_id,
+                       execution_manager_->RegisterNewSession(session_config));
+
+  std::vector<InputData> inputs;
+  ASSERT_OK_AND_ASSIGN(auto input_text,
+                       tokenizer_->TokenIdsToTensorBuffer({1}));
+  inputs.push_back(InputText(std::move(input_text)));
+  ASSERT_OK_AND_ASSIGN(const TaskId task_a_id,
+                       execution_manager_->GetNewTaskId());
+  ASSERT_OK(execution_manager_->AddPrefillTask(
+      session_id, task_a_id, std::move(inputs),
+      /*dependency_task_ids=*/{},
+      /*cancelled=*/std::make_shared<std::atomic<bool>>(false),
+      /*callback=*/nullptr));
+
+  std::vector<std::string> response_texts;
+  absl::AnyInvocable<void(absl::StatusOr<Responses>)> callback =
+      [&response_texts](absl::StatusOr<Responses> responses) {
+        ASSERT_OK(responses);
+        if (!responses->GetTexts().empty()) {
+          response_texts.push_back(responses->GetTexts()[0]);
+        }
+      };
+
+  // Suppress token "5".
+  ASSERT_OK_AND_ASSIGN(const TaskId task_b_id,
+                       execution_manager_->GetNewTaskId());
+  ASSERT_OK(execution_manager_->AddDecodeTask(
+      session_id, task_b_id,
+      /*dependency_task_ids=*/{task_a_id}, RepetitionPenaltyConfig::Default(),
+      SuppressTokensConfig(/*suppress_tokens=*/{
+          5,
+      }),
+      /*constraint=*/nullptr,
+      /*cancelled=*/std::make_shared<std::atomic<bool>>(false),
+      std::move(callback)));
+
+  EXPECT_OK(execution_manager_->WaitUntilDone(task_b_id, absl::Seconds(3)));
+
+  EXPECT_THAT(response_texts, ElementsAre("4", "4"));
 }
 
 TEST_P(ExecutionManagerTest, AddDecodeTaskWithConstraintWithInternalSampler) {
@@ -919,7 +1053,7 @@ TEST_P(ExecutionManagerTest, AddDecodeTaskWithConstraintWithInternalSampler) {
   ASSERT_OK(execution_manager_->AddDecodeTask(
       session_id, task_b_id,
       /*dependency_task_ids=*/{task_a_id}, RepetitionPenaltyConfig::Default(),
-      decode_config.GetConstraint(),
+      SuppressTokensConfig::Default(), decode_config.GetConstraint(),
       /*cancelled=*/std::make_shared<std::atomic<bool>>(false),
       std::move(callback)));
 
@@ -979,7 +1113,7 @@ TEST_P(ExecutionManagerTest, AddDecodeTaskWithConstraintWithExternalSampler) {
   ASSERT_OK(execution_manager_->AddDecodeTask(
       session_id, task_b_id,
       /*dependency_task_ids=*/{task_a_id}, RepetitionPenaltyConfig::Default(),
-      decode_config.GetConstraint(),
+      SuppressTokensConfig::Default(), decode_config.GetConstraint(),
       /*cancelled=*/std::make_shared<std::atomic<bool>>(false),
       std::move(callback)));
 
@@ -1152,6 +1286,7 @@ TEST_P(ExecutionManagerTest, DestructorWaitsForActiveTasks) {
 
   ASSERT_OK(execution_manager_->AddDecodeTask(
       session_id, task_id, {}, RepetitionPenaltyConfig::Default(),
+      SuppressTokensConfig::Default(),
       /*constraint=*/nullptr, std::make_shared<std::atomic<bool>>(false),
       [task_states, mutex](absl::StatusOr<Responses> responses) {
         absl::MutexLock lock(*mutex);

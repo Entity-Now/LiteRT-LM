@@ -2,14 +2,14 @@
 
 workspace(name = "litert_lm")
 
-# UPDATED = 2026-06-18
-LITERT_REF = "8b4a65581d100c32102d6e867403a55e37321aad"
+# UPDATED = 2026-06-29
+LITERT_REF = "622f1f3c1352f4bc2925061b8cb72e9ce52874fe"
 
-LITERT_SHA256 = "4417b2952ca91d7e3e4817dff12eb79cdda12b9e68fb686b0ac3d849a0d35634"
+LITERT_SHA256 = "f3fd51d1e1eb33472ba425462bf53b05ad02bddca9cd58c61209d4a8be7829d0"
 
-TENSORFLOW_REF = "228ee1c9263961e8e21e3e30a5132405a7c84cf0"
+TENSORFLOW_REF = "f197d45528bb1dcf6e2d5409907c1352c30c0e5e"
 
-TENSORFLOW_SHA256 = "aac20f117086432d57d06e5ba427a7109aff290965cbc2c5ce85f1c827727ee4"
+TENSORFLOW_SHA256 = "0a877fd2a217030441a316a6a3404ba9d3e56d420fe80d9a9a5724f7781d1cc0"
 
 # buildifier: disable=load-on-top
 
@@ -77,6 +77,19 @@ http_archive(
     sha256 = "c26b4e69cf02fea24511a108d158188b9d8174426311aac59ce803a78d107648",
     strip_prefix = "bazel_features-1.43.0",
     url = "https://github.com/bazel-contrib/bazel_features/releases/download/v1.43.0/bazel_features-v1.43.0.tar.gz",
+)
+
+# Same version that tensorflow uses, but with patches to fix build errors.
+http_archive(
+    name = "com_google_absl",
+    patch_cmds = [
+        # Replace @googletest with @com_google_googletest.
+        "sed -i -e 's|@googletest|@com_google_googletest|g' absl/*/BUILD* absl/*/*/BUILD* absl/*/*/*/BUILD*",
+    ],
+    patches = ["@//:PATCH.abseil"],
+    sha256 = "6e1aee535473414164bf83e4ebc40240dec71a4701f8a642d906e95bea1aea0c",
+    strip_prefix = "abseil-cpp-20260526.0",
+    url = "https://github.com/abseil/abseil-cpp/archive/20260526.0.tar.gz",
 )
 
 # TensorFlow
@@ -378,6 +391,8 @@ http_archive(
     patch_cmds = [
         # Replace @//third_party with @litert//third_party in files under third_party/.
         "sed -i -e 's|\"@//third_party/|\"@litert//third_party/|g' third_party/*/*",
+        # Replace @stblib with @stb://stblib in support/*/BUILD files.
+        "sed -i -e 's|\"@stblib\"|\"@stb//:stblib\"|g' support/*/BUILD",
     ],
     sha256 = LITERT_SHA256,
     strip_prefix = "LiteRT-" + LITERT_REF,
@@ -441,6 +456,9 @@ http_archive(
     name = "skia",
     patch_args = ["-p1"],
     patches = ["@//:PATCH.skia"],
+    repo_mapping = {
+        "@libpng": "@png",
+    },
     sha256 = "2fe28173428f8eebf2aa8a665bad32136086cc065f50c7154678a96250d1cde1",
     strip_prefix = "skia-226ae9d866748a2e68b6dbf114b37129c380a298",
     urls = ["https://github.com/google/skia/archive/226ae9d866748a2e68b6dbf114b37129c380a298.zip"],

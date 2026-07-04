@@ -137,6 +137,20 @@ def common_inference_options(f):
           " when the main 'backend' is 'cpu'."
       ),
   )(f)
+  f = click.option(
+      "--activation-data-type",
+      type=click.Choice(
+          ["fp32", "fp16", "int16", "int8"], case_sensitive=False
+      ),
+      default=None,
+      hidden=True,
+      help=(
+          "The activation data type to use for inference. If not set, use the"
+          " default from the engine. Note: This option is experimental and may"
+          " not always work.  Currently, it can be used to force FP32 mode when"
+          " using a GPU backend."
+      ),
+  )(f)
   return f
 
 

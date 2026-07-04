@@ -25,6 +25,7 @@ import os
 import sys
 from typing import Any
 
+from ._ffi import ActivationDataType
 from ._messages import Contents
 from ._messages import Message
 
@@ -242,6 +243,8 @@ class AbstractEngine(abc.ABC):
       backend: The hardware backend used for inference.
       max_num_tokens: Maximum number of tokens for the KV cache. If None, use
         the engine/model's default.
+      max_num_images: Maximum number of images that can be processed in a single
+        inference call.
       cache_dir: Directory for caching compiled model artifacts.
       vision_backend: The hardware backend used for vision encoding.
       audio_backend: The hardware backend used for audio encoding.
@@ -257,11 +260,13 @@ class AbstractEngine(abc.ABC):
   model_path: str
   backend: Backend
   max_num_tokens: int | None = None
+  max_num_images: int | None = None
   cache_dir: str = ""
   vision_backend: Backend | None = None
   audio_backend: Backend | None = None
   enable_speculative_decoding: bool | None = None
   lora_rank_config: LoraRankConfig | None = None
+  activation_data_type: ActivationDataType | None = None
 
   def __enter__(self) -> AbstractEngine:
     """Initializes the engine resources."""
@@ -545,6 +550,7 @@ class AbstractBenchmark(abc.ABC):
   cache_dir: str = ""
   enable_speculative_decoding: bool | None = None
   prompt: str = "How are you"
+  activation_data_type: ActivationDataType | None = None
 
   @abc.abstractmethod
   def run(self) -> BenchmarkInfo:

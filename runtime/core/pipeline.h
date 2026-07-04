@@ -27,17 +27,20 @@
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "litert/cc/litert_tensor_buffer.h"  // from @litert
+#include "support/tokenizer/tokenizer.h"  // from @litert
 #include "runtime/components/logits_processor/constrained_decoding/constraint.h"
 #include "runtime/components/logits_processor/repetition_penalty_config.h"
+#include "runtime/components/logits_processor/suppress_tokens_config.h"
 #include "runtime/components/sampler.h"
 #include "runtime/components/stop_token_detector.h"
-#include "runtime/components/tokenizer.h"
 #include "runtime/engine/io_types.h"
 #include "runtime/executor/llm_executor.h"
 #include "runtime/executor/llm_executor_io_types.h"
 #include "runtime/proto/sampler_params.pb.h"
 
 namespace litert::lm {
+
+using Tokenizer = ::litert::support::Tokenizer;
 
 // Runs the pipeline to prefill the input prompt.
 // - executor: The executor that calls the core LLM model.
@@ -59,6 +62,8 @@ absl::StatusOr<int> Prefill(LlmExecutor& executor, ExecutorInputs& inputs,
 // - num_output_candidates: The number of output candidates to generate.
 // - repetition_penalty_config: The repetition penalty config to penalize
 //   repetitive tokens during decoding.
+// - suppress_tokens_config: The suppress tokens config to suppress specific
+//   tokens during decoding.
 // - constraint: The constraint to constrain the decoding process.
 // - benchmark_info: The benchmark info to record the performance metrics.
 // - cancelled: A pointer to an atomic boolean. If the boolean is set to true,
@@ -66,7 +71,8 @@ absl::StatusOr<int> Prefill(LlmExecutor& executor, ExecutorInputs& inputs,
 absl::StatusOr<Responses> Decode(
     LlmExecutor& executor, Tokenizer& tokenizer,
     const StopTokenDetector& stop_token_detector, int num_output_candidates,
-    RepetitionPenaltyConfig repetition_penalty_config, Constraint* constraint,
+    RepetitionPenaltyConfig repetition_penalty_config,
+    SuppressTokensConfig suppress_tokens_config, Constraint* constraint,
     std::optional<BenchmarkInfo>& benchmark_info,
     std::atomic<bool>* cancelled = nullptr,
     int max_output_tokens = std::numeric_limits<int>::max());
@@ -80,7 +86,8 @@ absl::StatusOr<Responses> Decode(
 absl::Status DecodeStreaming(
     LlmExecutor& executor, Tokenizer& tokenizer,
     const StopTokenDetector& stop_token_detector, int num_output_candidates,
-    RepetitionPenaltyConfig repetition_penalty_config, Constraint* constraint,
+    RepetitionPenaltyConfig repetition_penalty_config,
+    SuppressTokensConfig suppress_tokens_config, Constraint* constraint,
     std::optional<BenchmarkInfo>& benchmark_info,
     absl::AnyInvocable<void(absl::StatusOr<Responses>)> callback,
     std::atomic<bool>* cancelled = nullptr,
@@ -94,6 +101,8 @@ absl::Status DecodeStreaming(
 // - sampler: The sampler to sample the token ids from the logits.
 // - repetition_penalty_config: The repetition penalty config to penalize
 //   repetitive tokens during decoding.
+// - suppress_tokens_config: The suppress tokens config to suppress specific
+//   tokens during decoding.
 // - constraint: The constraint to constrain the decoding process.
 // - decoded_ids: The decoded token ids from the external sampling process.
 //   The supported shape is [num_output_candidates, 1].
@@ -104,7 +113,8 @@ absl::StatusOr<Responses> DecodeCustomSampling(
     LlmExecutor& executor, Tokenizer& tokenizer,
     const StopTokenDetector& stop_token_detector, int num_output_candidates,
     Sampler& sampler, litert::TensorBuffer decoded_ids,
-    RepetitionPenaltyConfig repetition_penalty_config, Constraint* constraint,
+    RepetitionPenaltyConfig repetition_penalty_config,
+    SuppressTokensConfig suppress_tokens_config, Constraint* constraint,
     std::optional<BenchmarkInfo>& benchmark_info,
     std::atomic<bool>* cancelled = nullptr,
     int max_output_tokens = std::numeric_limits<int>::max());
@@ -119,7 +129,8 @@ absl::Status DecodeCustomSamplingStreaming(
     LlmExecutor& executor, Tokenizer& tokenizer,
     const StopTokenDetector& stop_token_detector, int num_output_candidates,
     Sampler& sampler, litert::TensorBuffer decoded_ids,
-    RepetitionPenaltyConfig repetition_penalty_config, Constraint* constraint,
+    RepetitionPenaltyConfig repetition_penalty_config,
+    SuppressTokensConfig suppress_tokens_config, Constraint* constraint,
     std::optional<BenchmarkInfo>& benchmark_info,
     absl::AnyInvocable<void(absl::StatusOr<Responses>)> callback,
     std::atomic<bool>* cancelled = nullptr,

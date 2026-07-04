@@ -30,6 +30,8 @@
 #include "absl/types/span.h"  // from @com_google_absl
 #include "litert/c/litert_layout.h"  // from @litert
 #include "litert/cc/litert_layout.h"  // from @litert
+#include "runtime/util/status_macros.h"  // IWYU pragma: keep NOLINT
+#include "tflite/types/half.h"  // from @litert
 
 #if defined(__ANDROID__) && defined(__ARM_NEON)
 #include <arm_neon.h>
@@ -50,7 +52,6 @@
 #include "litert/cc/litert_macros.h"  // from @litert
 #include "litert/cc/litert_ranked_tensor_type.h"  // from @litert
 #include "litert/cc/litert_tensor_buffer.h"  // from @litert
-#include "runtime/util/status_macros.h"
 
 namespace litert::lm {
 
@@ -744,7 +745,9 @@ namespace {
 template <typename T>
 void FillMasksInternal(T* mask_local, T* mask_global, int64_t seq_q,
                        int64_t seq_k, int32_t time_step,
-                       const int32_t* input_tokens, T valid_val, T masked_val) {
+                       const int32_t* input_tokens, int64_t input_tokens_size,
+                       const bool* valid_mask, int64_t valid_mask_size,
+                       T valid_val, T masked_val) {
   // Detection logic for capacity and batch_size.
   int64_t kv_cache_capacity = seq_k;
   bool has_batch_suffix = false;
@@ -805,8 +808,23 @@ void FillMasksInternal(T* mask_local, T* mask_global, int64_t seq_q,
         int64_t k = kv_cache_capacity + k_rel;
         if (k >= seq_k) break;
         // Causal + Validity check (for verify_mask).
-        if (k_rel <= q &&
-            (input_tokens == nullptr || input_tokens[k_rel] != -1)) {
+        bool is_valid = true;
+        if (valid_mask != nullptr) {
+          if (k_rel < valid_mask_size) {
+            is_valid = valid_mask[k_rel];
+          } else {
+            is_valid = true;
+          }
+        } else if (input_tokens != nullptr) {
+          if (seq_q > 1) {
+            if (k_rel < input_tokens_size) {
+              is_valid = (input_tokens[k_rel] != -1);
+            }
+          } else {
+            is_valid = true;
+          }
+        }
+        if (k_rel <= q && is_valid) {
           if (global_row) global_row[k] = valid_val;
           if (local_row)
             local_row[k] = valid_val;  // Current batch is always in window.
@@ -826,6 +844,7 @@ absl::Status HWMaskUpdate(
   static constexpr absl::string_view kMaskGlobal = "mask_global";
   static constexpr absl::string_view kInputTimeStep = "time_step";
   static constexpr absl::string_view kInputTokens = "input_tokens";
+  static constexpr absl::string_view kValidMask = "valid_mask";
 
   LITERT_ASSIGN_OR_RETURN(auto time_step_lock,
                           ::litert::TensorBufferScopedLock::Create(
@@ -833,13 +852,19 @@ absl::Status HWMaskUpdate(
                               ::litert::TensorBuffer::LockMode::kRead));
   int32_t time_step = static_cast<const int32_t*>(time_step_lock.second)[0];
 
+  int64_t input_tokens_size = 0;
+  std::optional<::litert::TensorBufferScopedLock> input_tokens_lock;
   const int32_t* input_tokens = nullptr;
   if (in_buffers.contains(kInputTokens)) {
-    LITERT_ASSIGN_OR_RETURN(auto input_tokens_lock,
+    auto& buf = in_buffers.at(kInputTokens);
+    LITERT_ASSIGN_OR_RETURN(auto type, buf.TensorType());
+    LITERT_ASSIGN_OR_RETURN(auto num_elements, type.Layout().NumElements());
+    input_tokens_size = num_elements;
+    LITERT_ASSIGN_OR_RETURN(auto lock,
                             ::litert::TensorBufferScopedLock::Create(
-                                in_buffers.at(kInputTokens),
-                                ::litert::TensorBuffer::LockMode::kRead));
-    input_tokens = static_cast<const int32_t*>(input_tokens_lock.second);
+                                buf, ::litert::TensorBuffer::LockMode::kRead));
+    input_tokens = static_cast<const int32_t*>(lock.second);
+    input_tokens_lock.emplace(std::move(lock.first));
   }
 
   // Get Outputs and Shapes
@@ -894,21 +919,43 @@ absl::Status HWMaskUpdate(
     global_ptr = lock.second;
   }
 
+  int64_t valid_mask_size = 0;
+  std::optional<::litert::TensorBufferScopedLock> valid_mask_lock;
+  const bool* valid_mask = nullptr;
+  if (in_buffers.contains(kValidMask)) {
+    auto& buf = in_buffers.at(kValidMask);
+    LITERT_ASSIGN_OR_RETURN(auto valid_mask_type, buf.TensorType());
+    LITERT_ASSIGN_OR_RETURN(auto num_elements,
+                            valid_mask_type.Layout().NumElements());
+    valid_mask_size = num_elements;
+    if (valid_mask_type.ElementType() != ::litert::ElementType::Bool) {
+      return absl::InvalidArgumentError("valid_mask must be Bool type");
+    }
+    LITERT_ASSIGN_OR_RETURN(auto lock,
+                            ::litert::TensorBufferScopedLock::Create(
+                                buf, ::litert::TensorBuffer::LockMode::kRead));
+    valid_mask = static_cast<const bool*>(lock.second);
+    valid_mask_lock.emplace(std::move(lock.first));
+  }
+
   // Dispatch by Dtype
   if (mask_type.ElementType() == ::litert::ElementType::Int8) {
     FillMasksInternal<int8_t>(static_cast<int8_t*>(local_ptr),
                               static_cast<int8_t*>(global_ptr), seq_q, seq_k,
-                              time_step, input_tokens,
+                              time_step, input_tokens, input_tokens_size,
+                              valid_mask, valid_mask_size,
                               /*valid_val=*/127, /*masked_val=*/-128);
   } else if (mask_type.ElementType() == ::litert::ElementType::Int16) {
     FillMasksInternal<int16_t>(static_cast<int16_t*>(local_ptr),
                                static_cast<int16_t*>(global_ptr), seq_q, seq_k,
-                               time_step, input_tokens,
+                               time_step, input_tokens, input_tokens_size,
+                               valid_mask, valid_mask_size,
                                /*valid_val=*/0, /*masked_val=*/-32767);
   } else if (mask_type.ElementType() == ::litert::ElementType::Float32) {
     FillMasksInternal<float>(static_cast<float*>(local_ptr),
                              static_cast<float*>(global_ptr), seq_q, seq_k,
-                             time_step, input_tokens,
+                             time_step, input_tokens, input_tokens_size,
+                             valid_mask, valid_mask_size,
                              /*valid_val=*/0.0f, /*masked_val=*/-1e9f);
   } else if (mask_type.ElementType() == ::litert::ElementType::Float16) {
     // Opaque uint16_t representation of IEEE 754 Float16.
@@ -916,6 +963,7 @@ absl::Status HWMaskUpdate(
     FillMasksInternal<uint16_t>(static_cast<uint16_t*>(local_ptr),
                                 static_cast<uint16_t*>(global_ptr), seq_q,
                                 seq_k, time_step, input_tokens,
+                                input_tokens_size, valid_mask, valid_mask_size,
                                 /*valid_val=*/0x0000, /*masked_val=*/0xFC00);
   } else if (mask_type.ElementType() == ::litert::ElementType::BFloat16) {
     // Opaque uint16_t representation of Brain Float16.
@@ -923,6 +971,7 @@ absl::Status HWMaskUpdate(
     FillMasksInternal<uint16_t>(static_cast<uint16_t*>(local_ptr),
                                 static_cast<uint16_t*>(global_ptr), seq_q,
                                 seq_k, time_step, input_tokens,
+                                input_tokens_size, valid_mask, valid_mask_size,
                                 /*valid_val=*/0x0000, /*masked_val=*/0xFF80);
   } else {
     return absl::InvalidArgumentError("Unsupported mask element type");
@@ -1093,7 +1142,8 @@ absl::Status HWPerLayerEmbeddingLookup(
         for (int i = 0; i < ple_embedding_dim; ++i) {
           float fval = row_float[i];
           int32_t qval = std::round(fval / output_scale) + final_zero_point;
-          qval = std::max(-32768, std::min(32767, qval));
+          qval = std::clamp<int32_t>(qval, std::numeric_limits<int16_t>::min(),
+                                     std::numeric_limits<int16_t>::max());
           int16_output[i] = static_cast<int16_t>(qval);
         }
       } else if (output_type == litert::ElementType::Float32) {
@@ -1175,6 +1225,11 @@ absl::Status WritePleEmbeddingsToPtr(void* dest_ptr,
       int16_ptr[i] =
           Quantize<int16_t>(ple_embeddings[i], final_scale, final_zero_point);
     }
+  } else if (output_type == litert::ElementType::Float16) {
+    tflite::half* fp16_ptr = static_cast<tflite::half*>(dest_ptr);
+    for (size_t i = 0; i < ple_embeddings.size(); ++i) {
+      fp16_ptr[i] = tflite::half(ple_embeddings[i]);
+    }
   } else if (output_type == litert::ElementType::Float32 ||
              output_type == litert::ElementType::None) {
     float* float_ptr = static_cast<float*>(dest_ptr);
@@ -1195,6 +1250,8 @@ absl::Status WritePleEmbeddings(::litert::TensorBuffer& buffer,
   size_t element_size = 0;
   if (output_type == litert::ElementType::Int16) {
     element_size = sizeof(int16_t);
+  } else if (output_type == litert::ElementType::Float16) {
+    element_size = sizeof(tflite::half);
   } else if (output_type == litert::ElementType::Float32 ||
              output_type == litert::ElementType::None) {
     element_size = sizeof(float);
@@ -1228,7 +1285,9 @@ absl::Status WriteAndPadPleEmbeddings(::litert::TensorBuffer& buffer,
   size_t num_tokens_to_fill =
       buffer_size /
       (ple_dim * (output_type == litert::ElementType::Int16 ? sizeof(int16_t)
-                                                            : sizeof(float)));
+                  : output_type == litert::ElementType::Float16
+                      ? sizeof(tflite::half)
+                      : sizeof(float)));
   RET_CHECK_LE(seq_pos_size, num_tokens_to_fill);
 
   LITERT_RETURN_IF_ERROR(
@@ -1254,6 +1313,20 @@ absl::Status WriteAndPadPleEmbeddings(::litert::TensorBuffer& buffer,
     for (size_t i = seq_pos_size; i < num_tokens_to_fill; ++i) {
       std::memcpy(padding_ptr, quantized_default_ple_emb.data(),
                   ple_dim * sizeof(int16_t));
+      padding_ptr += ple_dim;
+    }
+  } else if (output_type == litert::ElementType::Float16) {
+    tflite::half* fp16_ptr = static_cast<tflite::half*>(lock_and_addr.second);
+    std::vector<tflite::half> fp16_default_ple_emb(ple_dim, tflite::half(0.0f));
+    if (default_ple_emb.size() == ple_dim) {
+      for (size_t i = 0; i < ple_dim; ++i) {
+        fp16_default_ple_emb[i] = tflite::half(default_ple_emb[i]);
+      }
+    }
+    tflite::half* padding_ptr = fp16_ptr + seq_pos_size * ple_dim;
+    for (size_t i = seq_pos_size; i < num_tokens_to_fill; ++i) {
+      std::memcpy(padding_ptr, fp16_default_ple_emb.data(),
+                  ple_dim * sizeof(tflite::half));
       padding_ptr += ple_dim;
     }
   } else if (output_type == litert::ElementType::Float32 ||

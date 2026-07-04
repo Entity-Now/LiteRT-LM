@@ -87,20 +87,14 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
         "@litert//litert/cc:litert_element_type",
+        "@litert//litert/cc:litert_layout",
+        "@litert//litert/cc:litert_macros",
+        "@litert//litert/cc:litert_tensor_buffer",
         "//runtime/components/logits_processor",
         "//runtime/util:convert_tensor_buffer",
         "//runtime/util:litert_status_util",
         "@litert//tflite/types:half",
-    ] + select({
-        "@litert//litert:litert_link_capi_so": [
-            "@litert//litert/cc:litert_api_with_dynamic_runtime",
-        ],
-        "//conditions:default": [
-            "@litert//litert/cc:litert_layout",
-            "@litert//litert/cc:litert_macros",
-            "@litert//litert/cc:litert_tensor_buffer",
-        ],
-    }),
+    ],
 )
 
 cc_library(
@@ -221,7 +215,7 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
-        "//runtime/components:tokenizer",
+        "@litert//support/tokenizer",
         "@crate_index__llguidance-1.3.0//:llguidance_cc"
     ] + select({
         "@platforms//os:windows": [
@@ -272,7 +266,7 @@ cc_test(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
         "@nlohmann_json//:json",
-        "//runtime/components:tokenizer",
+        "@litert//support/tokenizer",
         "//runtime/util:litert_status_util",
         "//runtime/util:test_utils",
     ],
@@ -304,7 +298,7 @@ cc_test(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
         "@nlohmann_json//:json",
-        "//runtime/components:tokenizer",
+        "@litert//support/tokenizer",
         "//runtime/util:litert_status_util",
         "//runtime/util:test_utils",
     ],
@@ -326,7 +320,7 @@ cc_test(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
         "@nlohmann_json//:json",
-        "//runtime/components:tokenizer",
+        "@litert//support/tokenizer",
         "//runtime/util:litert_status_util",
     ],
 )
@@ -341,7 +335,7 @@ cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:string_view",
-        "//runtime/components:tokenizer",
+        "@litert//support/tokenizer",
         "//runtime/util:test_utils",
         "@crate_index__llguidance-1.3.0//:llguidance_cc"
     ],
@@ -359,7 +353,7 @@ cc_test(
         "@com_google_googletest//:gtest_main",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
-        "//runtime/components:tokenizer",
+        "@litert//support/tokenizer",
         "//runtime/util:test_utils",
     ],
 )
@@ -394,7 +388,7 @@ cc_library(
         ":llg_constraint_provider",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
-        "//runtime/components:tokenizer",
+        "@litert//support/tokenizer",
     ],
 )
 
@@ -410,7 +404,7 @@ cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:string_view",
-        "//runtime/components:tokenizer",
+        "@litert//support/tokenizer",
         "//runtime/util:test_utils",
     ],
 )

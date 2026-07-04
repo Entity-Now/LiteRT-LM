@@ -42,6 +42,7 @@ interface used must support `seek`.
 import dataclasses
 import datetime
 import enum
+import io
 import os
 import pathlib
 import shutil
@@ -58,6 +59,7 @@ import tomli as tomllib
 
 from litert_lm_builder import litertlm_core
 from litert_lm_builder import litertlm_header_schema_py_generated as schema
+from litert_lm_builder import litertlm_peek
 from runtime.proto import llm_metadata_pb2
 
 
@@ -89,6 +91,43 @@ class Metadata:
   key: str
   value: Any
   dtype: DType
+
+  @classmethod
+  def from_key_value_pair(cls, kvp: schema.KeyValuePairT) -> "Metadata":
+    """Creates a `Metadata` object from a `KeyValuePairT`."""
+    assert kvp.key is not None
+    if isinstance(key := kvp.key, bytes):
+      key = key.decode()
+    assert kvp.value is not None
+    value = kvp.value.value
+    match kvp.valueType:
+      case schema.VData.UInt8:
+        dtype = DType.UINT8
+      case schema.VData.Int8:
+        dtype = DType.INT8
+      case schema.VData.UInt16:
+        dtype = DType.UINT16
+      case schema.VData.Int16:
+        dtype = DType.INT16
+      case schema.VData.UInt32:
+        dtype = DType.UINT32
+      case schema.VData.Int32:
+        dtype = DType.INT32
+      case schema.VData.UInt64:
+        dtype = DType.UINT64
+      case schema.VData.Int64:
+        dtype = DType.INT64
+      case schema.VData.Float32:
+        dtype = DType.FLOAT32
+      case schema.VData.Double:
+        dtype = DType.DOUBLE
+      case schema.VData.Bool:
+        dtype = DType.BOOL
+      case schema.VData.StringValue:
+        dtype = DType.STRING
+      case _:
+        raise ValueError(f"Unsupported value type: {kvp.valueType}")
+    return cls(key=key, value=value, dtype=dtype)
 
   def to_key_value_pair(self) -> schema.KeyValuePairT:
     """Converts the Metadata object to a `KeyValuePairT`."""
@@ -369,6 +408,21 @@ class LitertLmFileBuilder:
     with litertlm_core.open_file(toml_path, "r") as f:
       parent_path = pathlib.Path(toml_path).parent.as_posix()
       return cls.from_toml_str(f.read(), parent_path)
+
+  @classmethod
+  def unpack(cls, litertlm_path: str, output_dir: str) -> LitertLmFileBuilderT:
+    """Unpacks a LiteRT-LM file into output_dir and returns a LitertLmFileBuilder initialized from the unpacked model.toml.
+
+    Args:
+      litertlm_path: The path to the LiteRT-LM file to unpack.
+      output_dir: The directory where unpacked files and model.toml will be
+        saved.
+
+    Returns:
+      The LitertLmFileBuilder object initialized from the unpacked model.toml.
+    """
+    toml_path = unpack(litertlm_path, output_dir)
+    return cls.from_toml_file(toml_path)
 
   def add_system_metadata(
       self,
@@ -836,3 +890,23 @@ def _resolve_path(path: str, parent_dir: str | None) -> str:
   if not litertlm_core.path_exists(abs_path):
     raise FileNotFoundError(f"File {abs_path} does not exist.")
   return abs_path
+
+
+def unpack(litertlm_path: str, output_dir: str) -> str:
+  """Unpacks a LiteRT-LM file into an output directory.
+
+  Args:
+    litertlm_path: The path to the LiteRT-LM file to unpack.
+    output_dir: The directory where the unpacked files and model.toml will be
+      saved.
+
+  Returns:
+    The path to the generated model.toml file.
+  """
+  litertlm_peek.peek_litertlm_file(
+      litertlm_path, dump_files_dir=output_dir, output_stream=io.StringIO()
+  )
+  return os.path.join(output_dir, "model.toml")
+
+
+unpack_litertlm_file = unpack

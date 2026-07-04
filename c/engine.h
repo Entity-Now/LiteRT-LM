@@ -88,6 +88,10 @@ typedef struct LiteRtLmTokenUnion LiteRtLmTokenUnion;
 // Use `litert_lm_token_unions_delete` to free memory.
 typedef struct LiteRtLmTokenUnions LiteRtLmTokenUnions;
 
+// Opaque pointer for LiteRT LM Input Data.
+// Use `litert_lm_input_data_delete` to free memory.
+typedef struct LiteRtLmInputData LiteRtLmInputData;
+
 // Opaque pointer for LiteRT LM Session Config.
 typedef struct LiteRtLmSessionConfig LiteRtLmSessionConfig;
 
@@ -96,7 +100,6 @@ typedef struct LiteRtLmConversationConfig LiteRtLmConversationConfig;
 
 // Represents the type of sampler.
 typedef enum {
-  kLiteRtLmSamplerTypeUnspecified = 0,
   // Probabilistically pick among the top k tokens.
   kLiteRtLmSamplerTypeTopK = 1,
   // Probabilistically pick among the tokens such that the sum is greater
@@ -106,14 +109,45 @@ typedef enum {
   kLiteRtLmSamplerTypeGreedy = 3,
 } LiteRtLmSamplerType;
 
-// Parameters for the sampler.
-typedef struct {
-  LiteRtLmSamplerType type;
-  int32_t top_k;
-  float top_p;
-  float temperature;
-  int32_t seed;
-} LiteRtLmSamplerParams;
+// Opaque pointer for LiteRT LM Sampler Parameters.
+// Use `litert_lm_sampler_params_delete` to free memory.
+typedef struct LiteRtLmSamplerParams LiteRtLmSamplerParams;
+
+// Creates LiteRT LM Sampler Parameters with a specific sampler type.
+// The caller is responsible for destroying the parameters using
+// `litert_lm_sampler_params_delete`.
+//
+// @param type The sampler type to use.
+// @return A pointer to the created parameters, or NULL on failure.
+LITERT_LM_C_API_EXPORT
+LiteRtLmSamplerParams* litert_lm_sampler_params_create(
+    LiteRtLmSamplerType type);
+
+// Destroys LiteRT LM Sampler Parameters.
+//
+// @param params The parameters to destroy.
+LITERT_LM_C_API_EXPORT
+void litert_lm_sampler_params_delete(LiteRtLmSamplerParams* params);
+
+// Sets the top-k value.
+LITERT_LM_C_API_EXPORT
+void litert_lm_sampler_params_set_top_k(LiteRtLmSamplerParams* params,
+                                        int32_t top_k);
+
+// Sets the top-p value.
+LITERT_LM_C_API_EXPORT
+void litert_lm_sampler_params_set_top_p(LiteRtLmSamplerParams* params,
+                                        float top_p);
+
+// Sets the temperature.
+LITERT_LM_C_API_EXPORT
+void litert_lm_sampler_params_set_temperature(LiteRtLmSamplerParams* params,
+                                              float temperature);
+
+// Sets the seed.
+LITERT_LM_C_API_EXPORT
+void litert_lm_sampler_params_set_seed(LiteRtLmSamplerParams* params,
+                                       int32_t seed);
 
 // Creates a LiteRT LM Session Config.
 // The caller is responsible for destroying the config using
@@ -280,16 +314,25 @@ typedef enum {
   kLiteRtLmInputDataTypeAudioEnd,
 } LiteRtLmInputDataType;
 
-// Represents a single piece of input data.
-typedef struct {
-  LiteRtLmInputDataType type;
-  // The data pointer. The interpretation depends on the `type`.
-  // For kInputText, it's a UTF-8 string.
-  // For kInputImage and kInputAudio, it's a pointer to the raw bytes.
-  const void* data;
-  // The size of the data in bytes.
-  size_t size;
-} LiteRtLmInputData;
+// Creates a LiteRT LM Input Data. The caller is responsible for destroying
+// the input data using `litert_lm_input_data_delete`.
+//
+// @param type The type of the input data.
+// @param data The data pointer. For kLiteRtLmInputDataTypeText, it's a UTF-8
+// string.
+//             For image/audio types, it's a pointer to the raw bytes.
+//             The data is copied internally.
+// @param size The size of the data in bytes.
+// @return A pointer to the created input data, or NULL on failure.
+LITERT_LM_C_API_EXPORT
+LiteRtLmInputData* litert_lm_input_data_create(LiteRtLmInputDataType type,
+                                               const void* data, size_t size);
+
+// Destroys a LiteRT LM Input Data.
+//
+// @param input_data The input data to destroy.
+LITERT_LM_C_API_EXPORT
+void litert_lm_input_data_delete(LiteRtLmInputData* input_data);
 
 // Creates LiteRT LM Engine Settings. The caller is responsible for destroying
 // the settings using `litert_lm_engine_settings_delete`.
@@ -519,7 +562,7 @@ void litert_lm_session_cancel_process(LiteRtLmSession* session);
 // @return 0 on success, non-zero on failure.
 LITERT_LM_C_API_EXPORT
 int litert_lm_session_run_prefill(LiteRtLmSession* session,
-                                  const LiteRtLmInputData* inputs,
+                                  const LiteRtLmInputData* const* inputs,
                                   size_t num_inputs);
 
 // Starts the decoding process for the model to predict the response based
@@ -559,7 +602,7 @@ LiteRtLmResponses* litert_lm_session_run_text_scoring(LiteRtLmSession* session,
 //   responsible for deleting the responses using `litert_lm_responses_delete`.
 LITERT_LM_C_API_EXPORT
 LiteRtLmResponses* litert_lm_session_generate_content(
-    LiteRtLmSession* session, const LiteRtLmInputData* inputs,
+    LiteRtLmSession* session, const LiteRtLmInputData* const* inputs,
     size_t num_inputs);
 // Destroys a LiteRT LM Responses object.
 //
@@ -743,14 +786,34 @@ LITERT_LM_C_API_EXPORT
 double litert_lm_benchmark_info_get_decode_tokens_per_sec_at(
     const LiteRtLmBenchmarkInfo* benchmark_info, int index);
 
+// Opaque pointer for LiteRT LM Stream Chunk.
+// This object represents a single chunk of data returned during streaming.
+// It is owned by the library and is only valid for the duration of the
+// callback.
+typedef struct LiteRtLmStreamChunk LiteRtLmStreamChunk;
+
+// Gets the text content of the chunk.
+// The returned string is owned by the chunk and is only valid as long as the
+// chunk is valid. Returns NULL if there is no text content in this chunk (e.g.
+// if it is an error or metadata-only chunk).
+LITERT_LM_C_API_EXPORT
+const char* litert_lm_stream_chunk_get_text(const LiteRtLmStreamChunk* chunk);
+
+// Returns true if this is the final chunk of the stream.
+LITERT_LM_C_API_EXPORT
+bool litert_lm_stream_chunk_is_final(const LiteRtLmStreamChunk* chunk);
+
+// Gets the error message associated with this chunk, if any.
+// Returns NULL if there is no error.
+LITERT_LM_C_API_EXPORT
+const char* litert_lm_stream_chunk_get_error(const LiteRtLmStreamChunk* chunk);
+
 // Callback for streaming responses.
 // `callback_data` is a pointer to user-defined data passed to the stream
-// function. `chunk` is the piece of text from the stream. It's only valid for
-// the duration of the call. `is_final` is true if this is the last chunk in the
-// stream. `error_msg` is a null-terminated string with an error message, or
-// NULL on success.
-typedef void (*LiteRtLmStreamCallback)(void* callback_data, const char* chunk,
-                                       bool is_final, const char* error_msg);
+// function. `chunk` is a pointer to the stream chunk object. It's only valid
+// for the duration of the call.
+typedef void (*LiteRtLmStreamCallback)(void* callback_data,
+                                       const LiteRtLmStreamChunk* chunk);
 
 // Starts the decoding process for the model to predict the response based
 // on the input prompt/query added after using litert_lm_session_run_prefill.
@@ -780,11 +843,9 @@ int litert_lm_session_run_decode_async(LiteRtLmSession* session,
 // callback.
 // @return 0 on success, non-zero on failure to start the stream.
 LITERT_LM_C_API_EXPORT
-int litert_lm_session_generate_content_stream(LiteRtLmSession* session,
-                                              const LiteRtLmInputData* inputs,
-                                              size_t num_inputs,
-                                              LiteRtLmStreamCallback callback,
-                                              void* callback_data);
+int litert_lm_session_generate_content_stream(
+    LiteRtLmSession* session, const LiteRtLmInputData* const* inputs,
+    size_t num_inputs, LiteRtLmStreamCallback callback, void* callback_data);
 
 // Creates a LiteRT LM Conversation. The caller is responsible for destroying
 // the conversation using `litert_lm_conversation_delete`.

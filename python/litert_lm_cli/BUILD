@@ -209,6 +209,7 @@ py_test(
         ":common",
         ":main_lib",
         ":model",
+        "//python/litert_lm",
         "//python/litert_lm_cli/commands:run",
         "@absl_py//absl/testing:absltest",
         requirement("click"),
@@ -225,8 +226,11 @@ pytype_strict_binary(
     main = "main.py",
     tags = [
         "noios",
-        "nomacos",
         "nowindows",
+    ],
+    visibility = [
+        "//learning/language/tunelab/gemma:__subpackages__",
+        "//:__subpackages__",
     ],
     deps = [
         ":main_lib",

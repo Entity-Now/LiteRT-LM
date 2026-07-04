@@ -33,24 +33,6 @@ class c_string_p(ctypes.c_char_p):  # pylint: disable=invalid-name
     return obj
 
 
-class LiteRtLmSamplerParams(ctypes.Structure):
-  _fields_ = [
-      ("type", ctypes.c_int),
-      ("top_k", ctypes.c_int),
-      ("top_p", ctypes.c_float),
-      ("temperature", ctypes.c_float),
-      ("seed", ctypes.c_int),
-  ]
-
-
-class LiteRtLmInputData(ctypes.Structure):
-  _fields_ = [
-      ("type", ctypes.c_int),
-      ("data", ctypes.c_void_p),
-      ("size", ctypes.c_size_t),
-  ]
-
-
 class InputDataType(enum.IntEnum):
   TEXT = 0
   IMAGE = 1
@@ -65,16 +47,13 @@ class TokenUnionType(enum.IntEnum):
 
 
 class SamplerType(enum.IntEnum):
-  UNSPECIFIED = 0
   TOP_K = 1
   TOP_P = 2
   GREEDY = 3
 
 
 # C-compatible callback type that matches 'LiteRtLmStreamCallback' in engine.h.
-STREAM_CALLBACK_TYPE = ctypes.CFUNCTYPE(
-    None, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_bool, ctypes.c_char_p
-)
+STREAM_CALLBACK_TYPE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
 
 
 class LogSeverity(enum.IntEnum):
@@ -85,6 +64,25 @@ class LogSeverity(enum.IntEnum):
   ERROR = 4
   FATAL = 5
   SILENT = 1000
+
+
+class ActivationDataType(enum.IntEnum):
+  """Activation data type for inference."""
+
+  FLOAT32 = 0
+  FLOAT16 = 1
+  INT16 = 2
+  INT8 = 3
+
+  @classmethod
+  def from_str(cls, val: str) -> ActivationDataType | None:
+    mapping = {
+        "fp32": cls.FLOAT32,
+        "fp16": cls.FLOAT16,
+        "int16": cls.INT16,
+        "int8": cls.INT8,
+    }
+    return mapping.get(val.lower())
 
 
 _LIB: ctypes.CDLL | None = None
@@ -133,6 +131,16 @@ def _setup_lib_signatures(lib):
   # Log level
   lib.litert_lm_set_min_log_level.argtypes = [ctypes.c_int]
 
+  # Input Data
+  lib.litert_lm_input_data_create.restype = ctypes.c_void_p
+  lib.litert_lm_input_data_create.argtypes = [
+      ctypes.c_int,
+      ctypes.c_void_p,
+      ctypes.c_size_t,
+  ]
+  lib.litert_lm_input_data_delete.restype = None
+  lib.litert_lm_input_data_delete.argtypes = [ctypes.c_void_p]
+
   # Engine Settings
   lib.litert_lm_engine_settings_create.restype = ctypes.c_void_p
   lib.litert_lm_engine_settings_create.argtypes = [
@@ -143,6 +151,10 @@ def _setup_lib_signatures(lib):
   ]
   lib.litert_lm_engine_settings_delete.argtypes = [ctypes.c_void_p]
   lib.litert_lm_engine_settings_set_max_num_tokens.argtypes = [
+      ctypes.c_void_p,
+      ctypes.c_int,
+  ]
+  lib.litert_lm_engine_settings_set_max_num_images.argtypes = [
       ctypes.c_void_p,
       ctypes.c_int,
   ]
@@ -165,6 +177,10 @@ def _setup_lib_signatures(lib):
   lib.litert_lm_engine_settings_set_enable_speculative_decoding.argtypes = [
       ctypes.c_void_p,
       ctypes.c_bool,
+  ]
+  lib.litert_lm_engine_settings_set_activation_data_type.argtypes = [
+      ctypes.c_void_p,
+      ctypes.c_int,
   ]
   lib.litert_lm_engine_settings_set_lora_rank.argtypes = [
       ctypes.c_void_p,
@@ -203,6 +219,27 @@ def _setup_lib_signatures(lib):
   lib.litert_lm_engine_create.argtypes = [ctypes.c_void_p]
   lib.litert_lm_engine_delete.argtypes = [ctypes.c_void_p]
 
+  # Sampler Params
+  lib.litert_lm_sampler_params_create.restype = ctypes.c_void_p
+  lib.litert_lm_sampler_params_create.argtypes = [ctypes.c_int]
+  lib.litert_lm_sampler_params_delete.argtypes = [ctypes.c_void_p]
+  lib.litert_lm_sampler_params_set_top_k.argtypes = [
+      ctypes.c_void_p,
+      ctypes.c_int,
+  ]
+  lib.litert_lm_sampler_params_set_top_p.argtypes = [
+      ctypes.c_void_p,
+      ctypes.c_float,
+  ]
+  lib.litert_lm_sampler_params_set_temperature.argtypes = [
+      ctypes.c_void_p,
+      ctypes.c_float,
+  ]
+  lib.litert_lm_sampler_params_set_seed.argtypes = [
+      ctypes.c_void_p,
+      ctypes.c_int,
+  ]
+
   # Session Config
   lib.litert_lm_session_config_create.restype = ctypes.c_void_p
   lib.litert_lm_session_config_create.argtypes = []
@@ -217,7 +254,7 @@ def _setup_lib_signatures(lib):
   ]
   lib.litert_lm_session_config_set_sampler_params.argtypes = [
       ctypes.c_void_p,
-      ctypes.POINTER(LiteRtLmSamplerParams),
+      ctypes.c_void_p,
   ]
   lib.litert_lm_session_config_set_lora_path.restype = ctypes.c_int
   lib.litert_lm_session_config_set_lora_path.argtypes = [
@@ -241,7 +278,7 @@ def _setup_lib_signatures(lib):
   lib.litert_lm_session_run_prefill.restype = ctypes.c_int
   lib.litert_lm_session_run_prefill.argtypes = [
       ctypes.c_void_p,
-      ctypes.POINTER(LiteRtLmInputData),
+      ctypes.POINTER(ctypes.c_void_p),
       ctypes.c_size_t,
   ]
   lib.litert_lm_session_run_decode.restype = ctypes.c_void_p
@@ -262,13 +299,13 @@ def _setup_lib_signatures(lib):
   lib.litert_lm_session_generate_content.restype = ctypes.c_void_p
   lib.litert_lm_session_generate_content.argtypes = [
       ctypes.c_void_p,
-      ctypes.POINTER(LiteRtLmInputData),
+      ctypes.POINTER(ctypes.c_void_p),
       ctypes.c_size_t,
   ]
   lib.litert_lm_session_generate_content_stream.restype = ctypes.c_int
   lib.litert_lm_session_generate_content_stream.argtypes = [
       ctypes.c_void_p,
-      ctypes.POINTER(LiteRtLmInputData),
+      ctypes.POINTER(ctypes.c_void_p),
       ctypes.c_size_t,
       STREAM_CALLBACK_TYPE,
       ctypes.c_void_p,
@@ -494,6 +531,14 @@ def _setup_lib_signatures(lib):
   lib.litert_lm_engine_get_start_token.argtypes = [ctypes.c_void_p]
   lib.litert_lm_engine_get_stop_tokens.restype = ctypes.c_void_p
   lib.litert_lm_engine_get_stop_tokens.argtypes = [ctypes.c_void_p]
+
+  # Stream Chunk
+  lib.litert_lm_stream_chunk_get_text.restype = ctypes.c_char_p
+  lib.litert_lm_stream_chunk_get_text.argtypes = [ctypes.c_void_p]
+  lib.litert_lm_stream_chunk_is_final.restype = ctypes.c_bool
+  lib.litert_lm_stream_chunk_is_final.argtypes = [ctypes.c_void_p]
+  lib.litert_lm_stream_chunk_get_error.restype = ctypes.c_char_p
+  lib.litert_lm_stream_chunk_get_error.argtypes = [ctypes.c_void_p]
 
 
 def set_min_log_severity(severity: LogSeverity):

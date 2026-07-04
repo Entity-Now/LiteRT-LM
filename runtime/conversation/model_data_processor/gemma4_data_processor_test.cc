@@ -27,8 +27,6 @@
 #include "absl/status/status.h"  // from @com_google_absl
 #include "nlohmann/json.hpp"  // from @nlohmann_json
 #include "runtime/components/prompt_template.h"
-#include "runtime/components/sentencepiece_tokenizer.h"
-#include "runtime/components/tokenizer.h"
 #include "runtime/conversation/io_types.h"
 #include "runtime/conversation/model_data_processor/gemma4_data_processor_config.h"
 #include "runtime/conversation/model_data_processor/test_utils.h"
@@ -104,11 +102,6 @@ TEST_F(Gemma4DataProcessorTest, ToInputDataVectorTextOnly) {
 
 TEST_P(Gemma4DataProcessorImageTest, ToInputDataVectorTextAndImage) {
   std::string image_name = GetParam();
-#ifdef LITERT_USE_SKIA
-  if (image_name == "apple.png") {
-    GTEST_SKIP() << "Skipping PNG test for SKIA";
-  }
-#endif
   ASSERT_OK_AND_ASSIGN(auto processor, Gemma4DataProcessor::Create(
                                            /*Gemma4DataProcessorConfig=*/
                                            {.max_num_patches = 2520}));

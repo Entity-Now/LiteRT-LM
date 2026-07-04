@@ -24,7 +24,10 @@ package(default_visibility = ["//visibility:public"])
 pytype_strict_library(
     name = "interfaces",
     srcs = ["interfaces.py"],
-    deps = [":_messages"],
+    deps = [
+        ":_ffi",
+        ":_messages",
+    ],
 )
 
 pytype_strict_library(

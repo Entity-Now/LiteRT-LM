@@ -34,7 +34,7 @@
 #include "absl/strings/str_cat.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/synchronization/mutex.h"  // from @com_google_absl
-#include "runtime/components/tokenizer.h"
+#include "support/tokenizer/tokenizer.h"  // from @litert
 #include "runtime/core/session_utils.h"
 #include "runtime/engine/engine.h"
 #include "runtime/engine/engine_settings.h"
@@ -53,7 +53,8 @@ using TaskController = SessionInterface::TaskController;
 // static
 absl::StatusOr<std::unique_ptr<SessionAdvanced>> SessionAdvanced::Create(
     std::weak_ptr<ExecutionManager> execution_manager,
-    Tokenizer* absl_nonnull tokenizer, const SessionConfig& session_config,
+    support::Tokenizer* absl_nonnull tokenizer,
+    const SessionConfig& session_config,
     std::optional<BenchmarkInfo> benchmark_info,
     std::atomic<int>* living_sessions_count) {
   auto execution_manager_lock = execution_manager.lock();
@@ -287,7 +288,8 @@ absl::StatusOr<std::unique_ptr<TaskController>> SessionAdvanced::RunDecodeAsync(
 
   RETURN_IF_ERROR(execution_manager_lock->AddDecodeTask(
       session_id_, task_id, last_task_ids_,
-      decode_config.GetRepetitionPenaltyConfig(), decode_config.GetConstraint(),
+      decode_config.GetRepetitionPenaltyConfig(),
+      decode_config.GetSuppressTokensConfig(), decode_config.GetConstraint(),
       cancelled, std::move(callback),
       decode_config.GetMaxOutputTokens().value_or(
           session_info_->session_config.GetMaxOutputTokens())));

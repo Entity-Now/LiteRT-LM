@@ -24,6 +24,7 @@ import prompt_toolkit
 from prompt_toolkit import key_binding
 
 import litert_lm
+from litert_lm_builder import litertlm_builder
 from litert_lm_cli import cli_helpers
 from litert_lm_cli import common
 from litert_lm_cli import help_formatter
@@ -180,6 +181,7 @@ def run_interactive(
     enable_speculative_decoding: bool | None = None,
     no_template: bool = False,
     max_num_tokens: int | None = None,
+    max_num_images: int | None = None,
     filter_channel_content_from_kv_cache: bool = False,
     vision_backend: str | None = None,
     audio_backend: str | None = None,
@@ -190,6 +192,7 @@ def run_interactive(
     seed: int | None = None,
     cache: str | None = None,
     cpu_thread_count: int | None = None,
+    activation_data_type: litert_lm.ActivationDataType | None = None,
 ) -> None:
   """Runs the model interactively or with a single prompt."""
   if not model_obj.exists():
@@ -208,11 +211,21 @@ def run_interactive(
     backend_val = model.parse_backend(
         backend, model_obj=model_obj, cpu_thread_count=cpu_thread_count
     )
-    vision_backend_val = (
-        model.parse_backend(vision_backend) if vision_backend else None
+    vision_backend_val = model.parse_backend(
+        vision_backend,
+        model_obj=model_obj,
+        target_model_types={
+            litertlm_builder.TfLiteModelType.VISION_ENCODER.value,
+        },
+        label="vision",
     )
-    audio_backend_val = (
-        model.parse_backend(audio_backend) if audio_backend else None
+    audio_backend_val = model.parse_backend(
+        audio_backend,
+        model_obj=model_obj,
+        target_model_types={
+            litertlm_builder.TfLiteModelType.AUDIO_ENCODER_HW.value,
+        },
+        label="audio",
     )
 
     sampler_config = None
@@ -248,9 +261,11 @@ def run_interactive(
           backend=backend_val,
           enable_speculative_decoding=enable_speculative_decoding,
           max_num_tokens=max_num_tokens,
+          max_num_images=max_num_images,
           vision_backend=vision_backend_val,
           audio_backend=audio_backend_val,
           cache_dir=cache_dir_val,
+          activation_data_type=activation_data_type,
       )
 
     with engine_cm as engine:
@@ -483,6 +498,7 @@ def run(
     seed: int | None = None,
     cache: str | None = None,
     cpu_thread_count: int | None = None,
+    activation_data_type: str | None = None,
 ) -> None:
   r"""Runs a LiteRT-LM model interactively or with a single prompt.
 
@@ -514,6 +530,7 @@ def run(
     seed: The seed to use for randomization.
     cache: The cache mode to use (no, memory, or disk).
     cpu_thread_count: The number of threads to use for CPU backend.
+    activation_data_type: The activation data type to use for inference.
   """
   if attachment and no_template:
     click.echo(
@@ -525,9 +542,7 @@ def run(
     return
 
   expanded_attachments = []
-  has_audio = False
-  has_image = False
-
+  num_images = 0
   for a in attachment:
     expanded = os.path.expanduser(a)
     if not os.path.exists(expanded):
@@ -536,31 +551,10 @@ def run(
 
     try:
       a_type = model.get_attachment_type(expanded)
-      if a_type == "audio":
-        has_audio = True
-      elif a_type == "image":
-        has_image = True
+      if a_type == "image":
+        num_images += 1
     except ValueError as e:
       raise click.BadParameter(str(e)) from e
-
-  if has_audio and not audio_backend:
-    click.echo(
-        click.style(
-            "Error: Audio attachments require --audio-backend to be set.",
-            fg="red",
-        )
-    )
-    return
-
-  if has_image and not vision_backend:
-    click.echo(
-        click.style(
-            "Error: Image attachments require --vision-backend to be set.",
-            fg="red",
-        )
-    )
-    return
-
   # If the stdin is not connected to the terminal, e.g., piped or redirected
   # input, then handle the input as the one-shot prompt.
   #
@@ -618,6 +612,8 @@ def run(
         )
         return
 
+  max_num_images = None if num_images == 0 else num_images
+
   run_interactive(
       model_obj,
       prompt=prompt,
@@ -627,6 +623,7 @@ def run(
       enable_speculative_decoding=enable_speculative_decoding,
       no_template=no_template,
       max_num_tokens=max_num_tokens,
+      max_num_images=max_num_images,
       filter_channel_content_from_kv_cache=filter_channel_content_from_kv_cache,
       vision_backend=vision_backend,
       audio_backend=audio_backend,
@@ -637,6 +634,11 @@ def run(
       seed=seed,
       cache=cache,
       cpu_thread_count=cpu_thread_count,
+      activation_data_type=(
+          litert_lm.ActivationDataType.from_str(activation_data_type)
+          if activation_data_type
+          else None
+      ),
   )
 
 
