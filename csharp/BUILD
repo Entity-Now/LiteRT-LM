@@ -14,14 +14,44 @@
 
 package(default_visibility = ["//visibility:public"])
 
-cc_binary(
-    name = "CLiteRTLM",
-    linkshared = True,
+genrule(
+    name = "copy_litert_lm_so",
+    srcs = ["//c:litert-lm"],
+    outs = ["liblitert-lm.so"],
+    cmd = "cp $(location //c:litert-lm) $@",
     visibility = ["//visibility:public"],
-    deps = [
-        "//c:engine",
-        "//schema/capabilities:capabilities_c",
-    ],
+)
+
+genrule(
+    name = "copy_litert_lm_dylib",
+    srcs = ["//c:litert-lm"],
+    outs = ["liblitert-lm.dylib"],
+    cmd = "cp $(location //c:litert-lm) $@",
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "copy_litert_lm_dll",
+    srcs = ["//c:litert-lm"],
+    outs = ["litert-lm.dll"],
+    cmd = "cp $(location //c:litert-lm) $@",
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "litert_lm_native",
+    srcs = select({
+        "@platforms//os:macos": [":copy_litert_lm_dylib"],
+        "@platforms//os:windows": [":copy_litert_lm_dll"],
+        "//conditions:default": [":copy_litert_lm_so"],
+    }),
+    visibility = ["//visibility:public"],
+)
+
+alias(
+    name = "CLiteRTLM",
+    actual = ":litert_lm_native",
+    visibility = ["//visibility:public"],
 )
 
 # Packages the built native shared library and headers

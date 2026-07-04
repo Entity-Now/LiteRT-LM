@@ -69,7 +69,7 @@ namespace LiteRTLM.Core
 
     internal static class LiteRtLmNative
     {
-        private const string DllName = "CLiteRTLM";
+        private const string DllName = "litert-lm";
 
         // Helper to marshal UTF-8 strings safely on all platform frameworks (.NET Standard 2.0 / modern .NET)
         public static string PtrToStringUtf8(IntPtr ptr)

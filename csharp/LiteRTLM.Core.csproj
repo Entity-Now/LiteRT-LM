@@ -13,10 +13,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Auto-copy native library built by Bazel if it exists in the bin directory -->
-    <None Condition="Exists('..\bazel-bin\csharp\libCLiteRTLM.dylib')" Include="..\bazel-bin\csharp\libCLiteRTLM.dylib" CopyToOutputDirectory="PreserveNewest" Link="libCLiteRTLM.dylib" />
-    <None Condition="Exists('..\bazel-bin\csharp\libCLiteRTLM.so')" Include="..\bazel-bin\csharp\libCLiteRTLM.so" CopyToOutputDirectory="PreserveNewest" Link="libCLiteRTLM.so" />
-    <None Condition="Exists('..\bazel-bin\csharp\libCLiteRTLM.dll')" Include="..\bazel-bin\csharp\libCLiteRTLM.dll" CopyToOutputDirectory="PreserveNewest" Link="CLiteRTLM.dll" />
+    <!-- Auto-copy native C API library built by Bazel if it exists in the bin directory. -->
+    <None Condition="Exists('..\bazel-bin\csharp\liblitert-lm.dylib')" Include="..\bazel-bin\csharp\liblitert-lm.dylib" CopyToOutputDirectory="PreserveNewest" Link="liblitert-lm.dylib" />
+    <None Condition="Exists('..\bazel-bin\csharp\liblitert-lm.so')" Include="..\bazel-bin\csharp\liblitert-lm.so" CopyToOutputDirectory="PreserveNewest" Link="liblitert-lm.so" />
+    <None Condition="Exists('..\bazel-bin\csharp\litert-lm.dll')" Include="..\bazel-bin\csharp\litert-lm.dll" CopyToOutputDirectory="PreserveNewest" Link="litert-lm.dll" />
 
     <!-- GPU backends dynamically load these LiteRT runtime libraries at engine initialization. -->
     <None Condition="$([MSBuild]::IsOSPlatform('OSX')) And ('$(RuntimeIdentifier)' == '' Or '$(RuntimeIdentifier)' == 'osx-arm64') And Exists('..\prebuilt\macos_arm64\libLiteRt.dylib')" Include="..\prebuilt\macos_arm64\libLiteRt.dylib" CopyToOutputDirectory="PreserveNewest" Link="libLiteRt.dylib" />
