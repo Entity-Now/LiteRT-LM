@@ -35,6 +35,7 @@
 #include "runtime/conversation/io_types.h"
 #include "runtime/conversation/model_data_processor/config_registry.h"
 #include "runtime/conversation/model_data_processor/gemma4_data_processor_config.h"
+#include "runtime/conversation/thinking_config.h"
 #include "runtime/engine/engine.h"
 #include "runtime/engine/engine_factory.h"
 #include "runtime/engine/engine_settings.h"
@@ -314,6 +315,25 @@ SamplerParameters CreateSamplerParamsFromJni(JNIEnv* env,
   env->DeleteLocalRef(sampler_config_cls);
 
   return sampler_params;
+}
+
+litert::lm::ThinkingConfig CreateThinkingConfigFromJni(
+    JNIEnv* env, jobject thinking_config_obj) {
+  jclass thinking_config_cls = env->GetObjectClass(thinking_config_obj);
+
+  jmethodID get_enable_thinking_mid =
+      env->GetMethodID(thinking_config_cls, "getEnableThinking", "()Z");
+  bool enable_thinking =
+      env->CallBooleanMethod(thinking_config_obj, get_enable_thinking_mid);
+
+  jmethodID get_thinking_token_budget_mid =
+      env->GetMethodID(thinking_config_cls, "getThinkingTokenBudget", "()I");
+  int thinking_token_budget =
+      env->CallIntMethod(thinking_config_obj, get_thinking_token_budget_mid);
+
+  env->DeleteLocalRef(thinking_config_cls);
+
+  return litert::lm::ThinkingConfig(enable_thinking, thinking_token_budget);
 }
 
 nlohmann::ordered_json GetExtraContextJson(JNIEnv* env,
@@ -898,11 +918,15 @@ LITERTLM_JNIEXPORT jlong JNICALL JNI_METHOD(nativeCreateConversation)(
     jboolean enable_constrained_decoding,
     jboolean filter_channel_content_from_kv_cache,
     jstring overwrite_prompt_template, jstring lora_path_str,
-    jstring audio_lora_path_str) {
+    jstring audio_lora_path_str, jboolean prefill_preface_on_init,
+    jint max_output_token, jobject thinking_config_obj) {
   Engine* engine = reinterpret_cast<Engine*>(engine_pointer);
 
   // Create a native SessionConfig
   auto session_config = SessionConfig::CreateDefault();
+  if (max_output_token > 0) {
+    session_config.SetMaxOutputTokens(max_output_token);
+  }
   if (sampler_config_obj != nullptr) {
     session_config.GetMutableSamplerParams() =
         CreateSamplerParamsFromJni(env, sampler_config_obj);
@@ -980,7 +1004,8 @@ LITERTLM_JNIEXPORT jlong JNICALL JNI_METHOD(nativeCreateConversation)(
           .SetPreface(json_preface)
           .SetEnableConstrainedDecoding(enable_constrained_decoding)
           .SetFilterChannelContentFromKvCache(
-              filter_channel_content_from_kv_cache);
+              filter_channel_content_from_kv_cache)
+          .SetPrefillPrefaceOnInit(prefill_preface_on_init);
 
   // Set the channels, if provided.
   // If channels is nullptr, the Conversation will use the channels defined in
@@ -1017,6 +1042,12 @@ LITERTLM_JNIEXPORT jlong JNICALL JNI_METHOD(nativeCreateConversation)(
     }
   }
 
+  // Set the thinking config, if provided.
+  if (thinking_config_obj != nullptr) {
+    conversation_config_builder.SetThinkingConfig(
+        CreateThinkingConfigFromJni(env, thinking_config_obj));
+  }
+
   // Build the conversation
   auto conversation_config = conversation_config_builder.Build(*engine);
 
@@ -1043,7 +1074,8 @@ LITERTLM_JNIEXPORT void JNICALL JNI_METHOD(nativeDeleteConversation)(
 LITERTLM_JNIEXPORT void JNICALL JNI_METHOD(nativeSendMessageAsync)(
     JNIEnv* env, jclass thiz, jlong conversation_pointer,
     jstring messageJSONString, jstring extraContextJsonString, jobject callback,
-    jobject visual_token_budget) {
+    jobject visual_token_budget, jint max_output_token,
+    jobject thinking_config_obj) {
   JavaVM* jvm = nullptr;
   if (env->GetJavaVM(&jvm) != JNI_OK) {
     ThrowLiteRtLmJniException(env, "Failed to get JavaVM");
@@ -1058,6 +1090,9 @@ LITERTLM_JNIEXPORT void JNICALL JNI_METHOD(nativeSendMessageAsync)(
   env->ReleaseStringUTFChars(messageJSONString, json_chars);
 
   litert::lm::OptionalArgs optional_args;
+  if (max_output_token > 0) {
+    optional_args.max_output_tokens = max_output_token;
+  }
   nlohmann::ordered_json extra_context =
       GetExtraContextJson(env, extraContextJsonString);
   if (!extra_context.is_null() && !extra_context.empty()) {
@@ -1067,6 +1102,11 @@ LITERTLM_JNIEXPORT void JNICALL JNI_METHOD(nativeSendMessageAsync)(
   auto args = GetDataProcessorArguments(env, conversation, visual_token_budget);
   if (args.has_value()) {
     optional_args.args = std::move(args);
+  }
+
+  if (thinking_config_obj != nullptr) {
+    optional_args.thinking_config =
+        CreateThinkingConfigFromJni(env, thinking_config_obj);
   }
 
   jobject callback_global = env->NewGlobalRef(callback);
@@ -1152,7 +1192,8 @@ LITERTLM_JNIEXPORT void JNICALL JNI_METHOD(nativeSendMessageAsync)(
 LITERTLM_JNIEXPORT jstring JNICALL JNI_METHOD(nativeSendMessage)(
     JNIEnv* env, jclass thiz, jlong conversation_pointer,
     jstring messageJSONString, jstring extraContextJsonString,
-    jobject visual_token_budget) {
+    jobject visual_token_budget, jint max_output_token,
+    jobject thinking_config_obj) {
   Conversation* conversation =
       reinterpret_cast<Conversation*>(conversation_pointer);
 
@@ -1161,6 +1202,9 @@ LITERTLM_JNIEXPORT jstring JNICALL JNI_METHOD(nativeSendMessage)(
   env->ReleaseStringUTFChars(messageJSONString, json_chars);
 
   litert::lm::OptionalArgs optional_args;
+  if (max_output_token > 0) {
+    optional_args.max_output_tokens = max_output_token;
+  }
   nlohmann::ordered_json extra_context =
       GetExtraContextJson(env, extraContextJsonString);
   if (!extra_context.is_null() && !extra_context.empty()) {
@@ -1170,6 +1214,11 @@ LITERTLM_JNIEXPORT jstring JNICALL JNI_METHOD(nativeSendMessage)(
   auto args = GetDataProcessorArguments(env, conversation, visual_token_budget);
   if (args.has_value()) {
     optional_args.args = std::move(args);
+  }
+
+  if (thinking_config_obj != nullptr) {
+    optional_args.thinking_config =
+        CreateThinkingConfigFromJni(env, thinking_config_obj);
   }
 
   auto response =

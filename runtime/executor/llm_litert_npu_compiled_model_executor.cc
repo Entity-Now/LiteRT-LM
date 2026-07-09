@@ -187,6 +187,7 @@ struct CacheUpdateSignatures {
   static constexpr absl::string_view kDecodeCacheUpdate = "decode_cache_update";
   static constexpr absl::string_view kVerifyCacheUpdate = "verify_cache_update";
   static constexpr absl::string_view kInputPos = "input_pos";
+  static constexpr absl::string_view kInputValidMask = "valid_mask";
 };
 
 struct MtpSignatures {
@@ -1162,7 +1163,10 @@ LlmLiteRtNpuCompiledModelExecutor::
             verify_output_kv_cache_slice_buffers,
         ::litert::TensorBuffer prefill_input_pos,
         ::litert::TensorBuffer decode_input_pos,
-        ::litert::TensorBuffer verify_input_pos)
+        ::litert::TensorBuffer verify_input_pos,
+        ::litert::TensorBuffer prefill_valid_mask,
+        ::litert::TensorBuffer decode_valid_mask,
+        ::litert::TensorBuffer verify_valid_mask)
 
 {
   absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer>
@@ -1176,6 +1180,10 @@ LlmLiteRtNpuCompiledModelExecutor::
     }
     prefill_input_buffers[CacheUpdateSignatures::kInputPos] =
         std::move(prefill_input_pos);
+    if (prefill_valid_mask) {
+      prefill_input_buffers[CacheUpdateSignatures::kInputValidMask] =
+          std::move(prefill_valid_mask);
+    }
   }
   absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer>
       prefill_output_buffers;
@@ -1196,6 +1204,10 @@ LlmLiteRtNpuCompiledModelExecutor::
     }
     decode_input_buffers[CacheUpdateSignatures::kInputPos] =
         std::move(decode_input_pos);
+    if (decode_valid_mask) {
+      decode_input_buffers[CacheUpdateSignatures::kInputValidMask] =
+          std::move(decode_valid_mask);
+    }
   }
   absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer>
       decode_output_buffers;
@@ -1216,6 +1228,10 @@ LlmLiteRtNpuCompiledModelExecutor::
     }
     verify_input_buffers[CacheUpdateSignatures::kInputPos] =
         std::move(verify_input_pos);
+    if (verify_valid_mask) {
+      verify_input_buffers[CacheUpdateSignatures::kInputValidMask] =
+          std::move(verify_valid_mask);
+    }
   }
   absl::flat_hash_map<absl::string_view, ::litert::TensorBuffer>
       verify_output_buffers;
@@ -1349,14 +1365,14 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::WarmupInference(
 
   if (llm_inference_context.decode_input_buffers.contains(
           LlmSignatures::kInputEmbeddings)) {
-    RETURN_IF_ERROR(
+    ABSL_RETURN_IF_ERROR(
         Fill(llm_inference_context
                  .decode_input_buffers[LlmSignatures::kInputEmbeddings],
              1));
   }
   if (llm_inference_context.prefill_input_buffers.contains(
           LlmSignatures::kInputEmbeddings)) {
-    RETURN_IF_ERROR(
+    ABSL_RETURN_IF_ERROR(
         Fill(llm_inference_context
                  .prefill_input_buffers[LlmSignatures::kInputEmbeddings],
              1));
@@ -1456,7 +1472,8 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::WarmupInference(
   }
 
   // Clear the KV cache buffers after warmup.
-  RETURN_IF_ERROR(ClearKVCache(llm_inference_context.prefill_input_buffers));
+  ABSL_RETURN_IF_ERROR(
+      ClearKVCache(llm_inference_context.prefill_input_buffers));
   return absl::OkStatus();
 }
 
@@ -1532,7 +1549,7 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::Prefill(
   RET_CHECK_GT(tensor_type.Layout().Dimensions()[1], 0)
       << "Prefill token ids must be non-empty.";
   if (UseEmbeddingLookupManager()) {
-    RETURN_IF_ERROR(
+    ABSL_RETURN_IF_ERROR(
         embedding_lookup_manager_->UpdateMultiModalEmbeddings(inputs));
   }
   LITERT_ASSIGN_OR_RETURN(auto ids,
@@ -1542,8 +1559,8 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::Prefill(
       auto work_groups,
       GetOptimizedPrefillWorkGroups(prefill_signature_map_, ids.size()));
   for (const auto& [prefill_signature, prefill_length] : work_groups) {
-    RETURN_IF_ERROR(PrefillInternal(prefill_signature,
-                                    ids.subspan(/*pos=*/0, prefill_length)));
+    ABSL_RETURN_IF_ERROR(PrefillInternal(
+        prefill_signature, ids.subspan(/*pos=*/0, prefill_length)));
     ids = ids.subspan(/*pos=*/prefill_length);
     latency_stats_.prefill_num_tokens += prefill_length;
   }
@@ -1551,7 +1568,8 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::Prefill(
       << "Work groups not covering the entire prefill input.";
 
   if (UseEmbeddingLookupManager()) {
-    RETURN_IF_ERROR(embedding_lookup_manager_->CleanupMultiModalEmbeddings());
+    ABSL_RETURN_IF_ERROR(
+        embedding_lookup_manager_->CleanupMultiModalEmbeddings());
   }
   auto end = absl::Now();
   latency_stats_.prefill_e2e_latency_us +=
@@ -1589,7 +1607,7 @@ LlmLiteRtNpuCompiledModelExecutor::DecodeLogits(
           processed_tokens_.InvalidatePendingInputToken();
           std::shared_ptr<TokenData> token =
               std::make_shared<TokenData>(ids[0]);
-          RETURN_IF_ERROR(processed_tokens_.AddPendingInputToken({token}));
+          ABSL_RETURN_IF_ERROR(processed_tokens_.AddPendingInputToken({token}));
         }
       }
     }
@@ -1605,12 +1623,12 @@ LlmLiteRtNpuCompiledModelExecutor::DecodeLogits(
 
   std::shared_ptr<TokenData> token = pending_input_token[0];
   if (UseEmbeddingLookupManager() && token->embedding().empty()) {
-    RETURN_IF_ERROR(embedding_lookup_manager_->LookupDecode(
+    ABSL_RETURN_IF_ERROR(embedding_lookup_manager_->LookupDecode(
         token->id(), token->mutable_embedding()));
   }
 
-  RETURN_IF_ERROR(DecodeInternal(internal_start_step, token));
-  RETURN_IF_ERROR(processed_tokens_.MarkPendingInputTokenAsProcessed());
+  ABSL_RETURN_IF_ERROR(DecodeInternal(internal_start_step, token));
+  ABSL_RETURN_IF_ERROR(processed_tokens_.MarkPendingInputTokenAsProcessed());
 
   const auto& src_buffer =
       llm_inference_context_
@@ -1620,23 +1638,23 @@ LlmLiteRtNpuCompiledModelExecutor::DecodeLogits(
   LITERT_ASSIGN_OR_RETURN(auto output_logits,
                           CreateTensorBuffer<float>({1, 1, vocab_size}));
 
-  RETURN_IF_ERROR(DequantizeLogits(src_buffer, output_logits,
-                                   per_tensor_logits_scale_,
-                                   per_tensor_logits_zero_point_, false));
+  ABSL_RETURN_IF_ERROR(DequantizeLogits(src_buffer, output_logits,
+                                        per_tensor_logits_scale_,
+                                        per_tensor_logits_zero_point_, false));
 
   if (!decode_params.GetLogitsProcessorList().empty()) {
     std::vector<int> current_token_ids = {token->id()};
     if (last_run_is_decode) {
       for (LogitsProcessor* logits_processor :
            decode_params.GetLogitsProcessorList()) {
-        RETURN_IF_ERROR(
+        ABSL_RETURN_IF_ERROR(
             logits_processor->UpdateState(absl::MakeSpan(current_token_ids)));
       }
     }
 
     for (LogitsProcessor* logits_processor :
          decode_params.GetLogitsProcessorList()) {
-      RETURN_IF_ERROR(logits_processor->ProcessLogits(output_logits));
+      ABSL_RETURN_IF_ERROR(logits_processor->ProcessLogits(output_logits));
     }
   }
 
@@ -1670,14 +1688,14 @@ LlmLiteRtNpuCompiledModelExecutor::Decode(
 
     if (UseEmbeddingLookupManager()) {
       auto start_lookup = absl::Now();
-      RETURN_IF_ERROR(embedding_lookup_manager_->LookupDecode(
+      ABSL_RETURN_IF_ERROR(embedding_lookup_manager_->LookupDecode(
           last_output_token->id(), last_output_token->mutable_embedding()));
       latency_stats_.decode_embedder_inference_latency_us +=
           absl::ToInt64Microseconds(absl::Now() - start_lookup);
     }
 
     auto start_add = absl::Now();
-    RETURN_IF_ERROR(
+    ABSL_RETURN_IF_ERROR(
         processed_tokens_.AddPendingInputToken({std::move(last_output_token)}));
     latency_stats_.decode_token_queue_latency_us +=
         absl::ToInt64Microseconds(absl::Now() - start_add);
@@ -1713,7 +1731,7 @@ LlmLiteRtNpuCompiledModelExecutor::Decode(
         std::make_shared<TokenData>(next_token_id);
     if (UseEmbeddingLookupManager()) {
       auto start_lookup = absl::Now();
-      RETURN_IF_ERROR(embedding_lookup_manager_->LookupDecode(
+      ABSL_RETURN_IF_ERROR(embedding_lookup_manager_->LookupDecode(
           next_token->id(), next_token->mutable_embedding()));
       latency_stats_.decode_embedder_inference_latency_us +=
           absl::ToInt64Microseconds(absl::Now() - start_lookup);
@@ -1724,7 +1742,7 @@ LlmLiteRtNpuCompiledModelExecutor::Decode(
     if (!mark_status.ok() && !absl::IsNotFound(mark_status)) {
       return mark_status;
     }
-    RETURN_IF_ERROR(
+    ABSL_RETURN_IF_ERROR(
         processed_tokens_.AddPendingInputToken({std::move(next_token)}));
     current_step_++;
     latency_stats_.decode_token_queue_latency_us +=
@@ -1752,11 +1770,11 @@ LlmLiteRtNpuCompiledModelExecutor::Decode(
   if (!has_valid_verify_activations_) {
     NPU_EXECUTOR_LOG(INFO) << "Step " << internal_start_step
                            << ": Running Main Decode Signature";
-    RETURN_IF_ERROR(
+    ABSL_RETURN_IF_ERROR(
         DecodeInternal(internal_start_step, pending_input_token[0]));
 
     auto start_mark = absl::Now();
-    RETURN_IF_ERROR(processed_tokens_.MarkPendingInputTokenAsProcessed());
+    ABSL_RETURN_IF_ERROR(processed_tokens_.MarkPendingInputTokenAsProcessed());
     latency_stats_.decode_token_queue_latency_us +=
         absl::ToInt64Microseconds(absl::Now() - start_mark);
 
@@ -1788,7 +1806,7 @@ LlmLiteRtNpuCompiledModelExecutor::Decode(
       memcpy(drafter_activations_lock_and_addr.second,
              last_verify_activations_.data(), last_verify_activations_.size());
     }
-    RETURN_IF_ERROR(processed_tokens_.MarkPendingInputTokenAsProcessed());
+    ABSL_RETURN_IF_ERROR(processed_tokens_.MarkPendingInputTokenAsProcessed());
   }
 
   if (speculative_decoding_type_ == SpeculativeDecodingType::kMTP) {
@@ -1801,7 +1819,7 @@ LlmLiteRtNpuCompiledModelExecutor::Decode(
     LITERT_ASSIGN_OR_RETURN(std::vector<int> draft_tokens,
                             RunDrafterLoop(mtp_start_step, mtp_start_token_id));
     auto start_verify = absl::Now();
-    RETURN_IF_ERROR(
+    ABSL_RETURN_IF_ERROR(
         RunVerifierBatch(mtp_start_step, mtp_start_token_id, draft_tokens));
     latency_stats_.decode_llm_inference_latency_us +=
         absl::ToInt64Microseconds(absl::Now() - start_verify);
@@ -1821,7 +1839,7 @@ LlmLiteRtNpuCompiledModelExecutor::Decode(
                            << rs_result.bonus_token_id;
 
     auto start_commit = absl::Now();
-    RETURN_IF_ERROR(CommitVerifiedKVCache(mtp_start_step));
+    ABSL_RETURN_IF_ERROR(CommitVerifiedKVCache(mtp_start_step));
     latency_stats_.decode_cache_update_inference_latency_us +=
         absl::ToInt64Microseconds(absl::Now() - start_commit);
 
@@ -1874,14 +1892,14 @@ LlmLiteRtNpuCompiledModelExecutor::Decode(
         std::make_shared<TokenData>(first_token_id);
     if (UseEmbeddingLookupManager()) {
       auto start_lookup = absl::Now();
-      RETURN_IF_ERROR(embedding_lookup_manager_->LookupDecode(
+      ABSL_RETURN_IF_ERROR(embedding_lookup_manager_->LookupDecode(
           first_token->id(), first_token->mutable_embedding()));
       latency_stats_.decode_embedder_inference_latency_us +=
           absl::ToInt64Microseconds(absl::Now() - start_lookup);
     }
     // For MTP, we need to mark them as processed so the next step's
     // GetNextUnprocessedToken works correctly.
-    RETURN_IF_ERROR(
+    ABSL_RETURN_IF_ERROR(
         processed_tokens_.AddPendingInputToken({std::move(first_token)}));
     current_step_++;
 
@@ -1901,7 +1919,7 @@ LlmLiteRtNpuCompiledModelExecutor::Decode(
 
     if (UseEmbeddingLookupManager()) {
       auto start_lookup = absl::Now();
-      RETURN_IF_ERROR(embedding_lookup_manager_->LookupDecode(
+      ABSL_RETURN_IF_ERROR(embedding_lookup_manager_->LookupDecode(
           last_output_token->id(), last_output_token->mutable_embedding()));
       latency_stats_.decode_embedder_inference_latency_us +=
           absl::ToInt64Microseconds(absl::Now() - start_lookup);
@@ -1912,7 +1930,7 @@ LlmLiteRtNpuCompiledModelExecutor::Decode(
     // token).
 
     auto start_add = absl::Now();
-    RETURN_IF_ERROR(
+    ABSL_RETURN_IF_ERROR(
         processed_tokens_.AddPendingInputToken({std::move(last_output_token)}));
     latency_stats_.decode_token_queue_latency_us +=
         absl::ToInt64Microseconds(absl::Now() - start_add);
@@ -2025,7 +2043,7 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::PrefillInternal(
     memset(prefill_timestep_ptr, 0, prefill_timestep_size);
 
     if (processed_tokens_.TokenCount() != current_step_) {
-      RETURN_IF_ERROR(processed_tokens_.RollBackToStep(current_step_));
+      ABSL_RETURN_IF_ERROR(processed_tokens_.RollBackToStep(current_step_));
     }
     // Check if have a pending input token. Note that 'internal_start_step' is
     // always equal to the number of processed tokens plus 1.
@@ -2055,7 +2073,8 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::PrefillInternal(
       if (mask_input_tokens_ptr) {
         mask_input_tokens_ptr[input_idx] = pending_input_token[0]->id();
       }
-      RETURN_IF_ERROR(processed_tokens_.MarkPendingInputTokenAsProcessed());
+      ABSL_RETURN_IF_ERROR(
+          processed_tokens_.MarkPendingInputTokenAsProcessed());
       ++input_idx;
     }
 
@@ -2101,7 +2120,7 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::PrefillInternal(
       litert::TensorBuffer& embedding_buffer =
           llm_inference_context_
               .prefill_input_buffers[LlmSignatures::kInputEmbeddings];
-      RETURN_IF_ERROR(embedding_lookup_manager_->LookupPrefill(
+      ABSL_RETURN_IF_ERROR(embedding_lookup_manager_->LookupPrefill(
           processed_input_tokens, &embedding_buffer,
           pending_input_token.empty() ? 0 : 1));
       latency_stats_.prefill_embedder_inference_latency_us +=
@@ -2119,14 +2138,14 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::PrefillInternal(
     // Look up the embeddings for the last token so they can be used in the next
     // prefill or decode. This has to be done now in the case of multi-modal
     // prefill so the embeddings are used in the correct order.
-    RETURN_IF_ERROR(embedding_lookup_manager_->LookupPrefill(
+    ABSL_RETURN_IF_ERROR(embedding_lookup_manager_->LookupPrefill(
         last_input_token->id(), last_input_token->mutable_embedding()));
     latency_stats_.prefill_embedder_inference_latency_us +=
         absl::ToInt64Microseconds(absl::Now() - start);
   }
 
   // Add the last input token to the pending input token list.
-  RETURN_IF_ERROR(
+  ABSL_RETURN_IF_ERROR(
       processed_tokens_.AddPendingInputToken({std::move(last_input_token)}));
   ++current_step_;
 
@@ -2157,7 +2176,7 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::PrefillInternal(
 
     // Use tokens_to_embed for PLE lookup since we need the lookup for the
     // pending token (if available) and ids[0, last_token-1].
-    RETURN_IF_ERROR(HWPerLayerEmbeddingLookup(
+    ABSL_RETURN_IF_ERROR(HWPerLayerEmbeddingLookup(
         tokens_to_embed.data(), tokens_to_embed.size(), ple_table_ptrs_.data(),
         ple_quant_params_.data(), num_tables_, ple_embedding_dim_, output_ptr,
         output_type_, ple_table_element_type_, mul_scale_, output_scale_,
@@ -2316,6 +2335,12 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::PrefillInternalFromEmbeddings(
         llm_inference_context_.prefill_input_buffers[kPerLayerEmbedderTensor];
 
     std::vector<float> default_ple_emb;
+    if (per_layer_embedding_lookup_manager_ == nullptr &&
+        embedder_per_layer_model_ != nullptr) {
+      LITERT_ASSIGN_OR_RETURN(per_layer_embedding_lookup_manager_,
+                              EmbeddingLookupManager::Create(
+                                  env_, embedder_per_layer_model_, false));
+    }
     if (per_layer_embedding_lookup_manager_ != nullptr) {
       auto* ple_lookup =
           per_layer_embedding_lookup_manager_->GetTextEmbeddingLookup();
@@ -2334,7 +2359,7 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::PrefillInternalFromEmbeddings(
         default_ple_emb.empty() ? dims[2] : default_ple_emb.size();
     size_t starting_token = ple_embeddings.size() / ple_dim;
 
-    RETURN_IF_ERROR(WriteAndPadPleEmbeddings(
+    ABSL_RETURN_IF_ERROR(WriteAndPadPleEmbeddings(
         buffer, ple_embeddings, ple_dim, starting_token, default_ple_emb,
         output_type_, output_scale_, final_zero_point_));
   }
@@ -2395,8 +2420,8 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::PrefillCommonPipeline(
   {
     auto start = absl::Now();
     if (prefill_mask_update_method_ == MaskUpdateMethod::kWH) {
-      RETURN_IF_ERROR(HWMaskUpdate(mask_context_.prefill_input_buffers,
-                                   mask_context_.prefill_output_buffers));
+      ABSL_RETURN_IF_ERROR(HWMaskUpdate(mask_context_.prefill_input_buffers,
+                                        mask_context_.prefill_output_buffers));
     } else {
       auto res = npu_auxiliary_context_.npu_auxiliary_compiled_model.Run(
           MaskSignatures::kPrefillMask, mask_context_.prefill_input_buffers,
@@ -2425,7 +2450,7 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::PrefillCommonPipeline(
   {
     auto start = absl::Now();
     if (prefill_kv_cache_update_method_ == KVCacheUpdateMethod::kWH) {
-      RETURN_IF_ERROR(HWKVCacheUpdate(
+      ABSL_RETURN_IF_ERROR(HWKVCacheUpdate(
           cache_update_inference_context_.prefill_input_buffers,
           cache_update_inference_context_.prefill_output_buffers,
           kv_quant_params_));
@@ -2457,7 +2482,7 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::DecodeInternal(
 
     if (id != kInvalidTokenId) {
       // Decode input tokens.
-      RETURN_IF_ERROR(SetFirstElement(
+      ABSL_RETURN_IF_ERROR(SetFirstElement(
           embedder_context_.inference_context
               .decode_input_buffers[EmbedderSignatures::kEmbedderInput],
           id));
@@ -2468,17 +2493,17 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::DecodeInternal(
     // know the current step.
 
     // 1. RoPE position
-    RETURN_IF_ERROR(SetFirstElement(
+    ABSL_RETURN_IF_ERROR(SetFirstElement(
         rope_context_.decode_input_buffers[RopeSignatures::kInputPos], step));
 
     // 2. Mask timestep
-    RETURN_IF_ERROR(SetFirstElement(
+    ABSL_RETURN_IF_ERROR(SetFirstElement(
         mask_context_.decode_input_buffers[MaskSignatures::kMaskInputTimeStep],
         step));
 
     if (mask_context_.decode_input_buffers.contains(
             MaskSignatures::kMaskInputTokens)) {
-      RETURN_IF_ERROR(SetFirstElement(
+      ABSL_RETURN_IF_ERROR(SetFirstElement(
           mask_context_.decode_input_buffers[MaskSignatures::kMaskInputTokens],
           id));
     }
@@ -2494,7 +2519,7 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::DecodeInternal(
     }
 
     // 3. Cache update position
-    RETURN_IF_ERROR(SetFirstElement(
+    ABSL_RETURN_IF_ERROR(SetFirstElement(
         cache_update_inference_context_
             .decode_input_buffers[CacheUpdateSignatures::kInputPos],
         step));
@@ -2548,9 +2573,9 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::DecodeInternal(
     if (!token->per_layer_embedding().empty()) {
       auto& buffer =
           llm_inference_context_.decode_input_buffers[kPerLayerEmbedderTensor];
-      RETURN_IF_ERROR(WritePleEmbeddings(buffer, token->per_layer_embedding(),
-                                         output_type_, output_scale_,
-                                         final_zero_point_));
+      ABSL_RETURN_IF_ERROR(
+          WritePleEmbeddings(buffer, token->per_layer_embedding(), output_type_,
+                             output_scale_, final_zero_point_));
     } else if (use_hw_ple_for_npu_ && !ple_table_ptrs_.empty()) {
       auto start = absl::Now();
       auto& ple_output_buffer =
@@ -2562,7 +2587,7 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::DecodeInternal(
       void* output_ptr = lock.second;
 
       int id = token->id();
-      RETURN_IF_ERROR(HWPerLayerEmbeddingLookup(
+      ABSL_RETURN_IF_ERROR(HWPerLayerEmbeddingLookup(
           &id, 1, ple_table_ptrs_.data(), ple_quant_params_.data(), num_tables_,
           ple_embedding_dim_, output_ptr, output_type_, ple_table_element_type_,
           mul_scale_, output_scale_, final_zero_point_));
@@ -2619,8 +2644,8 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::DecodeInternal(
   {
     auto start = absl::Now();
     if (decode_mask_update_method_ == MaskUpdateMethod::kWH) {
-      RETURN_IF_ERROR(HWMaskUpdate(mask_context_.decode_input_buffers,
-                                   mask_context_.decode_output_buffers));
+      ABSL_RETURN_IF_ERROR(HWMaskUpdate(mask_context_.decode_input_buffers,
+                                        mask_context_.decode_output_buffers));
     } else {
       auto res = npu_auxiliary_context_.npu_auxiliary_compiled_model.Run(
           MaskSignatures::kDecodeMask, mask_context_.decode_input_buffers,
@@ -2649,7 +2674,7 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::DecodeInternal(
   {
     auto start = absl::Now();
     if (decode_kv_cache_update_method_ == KVCacheUpdateMethod::kWH) {
-      RETURN_IF_ERROR(
+      ABSL_RETURN_IF_ERROR(
           HWKVCacheUpdate(cache_update_inference_context_.decode_input_buffers,
                           cache_update_inference_context_.decode_output_buffers,
                           kv_quant_params_));
@@ -2687,7 +2712,7 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::DecodeSingleToken(
                            ple_embeddings.begin() + (idx + 1) * ple_dim);
   }
 
-  RETURN_IF_ERROR(DecodeInternal(step, token));
+  ABSL_RETURN_IF_ERROR(DecodeInternal(step, token));
   current_step_ = step + 1;
   return absl::OkStatus();
 }
@@ -2768,7 +2793,7 @@ LlmLiteRtNpuCompiledModelExecutor::RunDrafterLoop(int start_step,
 
   start = absl::Now();
   if (mtp_mask_update_method_ == MaskUpdateMethod::kWH) {
-    RETURN_IF_ERROR(
+    ABSL_RETURN_IF_ERROR(
         HWMaskUpdate(aux_ctx.mask_input_buffers, aux_ctx.mask_output_buffers));
   } else {
     LITERT_RETURN_IF_ERROR(aux_ctx.mtp_aux_compiled_model.Run(
@@ -2995,7 +3020,7 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::RunVerifierBatch(
             ple_output_buffer, ::litert::TensorBuffer::LockMode::kWrite));
     void* output_ptr = lock.second;
 
-    RETURN_IF_ERROR(HWPerLayerEmbeddingLookup(
+    ABSL_RETURN_IF_ERROR(HWPerLayerEmbeddingLookup(
         verify_ids.data(), verify_ids.size(), ple_table_ptrs_.data(),
         ple_quant_params_.data(), num_tables_, ple_embedding_dim_, output_ptr,
         output_type_, ple_table_element_type_, mul_scale_, output_scale_,
@@ -3157,7 +3182,7 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::CommitVerifiedKVCache(
     }
   }
   if (prefill_kv_cache_update_method_ == KVCacheUpdateMethod::kWH) {
-    RETURN_IF_ERROR(
+    ABSL_RETURN_IF_ERROR(
         HWKVCacheUpdate(cache_update_inference_context_.verify_input_buffers,
                         cache_update_inference_context_.verify_output_buffers,
                         kv_quant_params_));
@@ -3217,13 +3242,14 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::Reset() {
                          << latency_stats_;
   current_step_ = 0;
   ran_decode_ = false;
-  RETURN_IF_ERROR(processed_tokens_.RollBackToStep(0));
+  ABSL_RETURN_IF_ERROR(processed_tokens_.RollBackToStep(0));
   sampled_ids_.clear();
   latency_stats_ = {};
   last_verify_activations_.clear();
   pending_accepted_tokens_.clear();
 
-  RETURN_IF_ERROR(ClearKVCache(llm_inference_context_.prefill_input_buffers));
+  ABSL_RETURN_IF_ERROR(
+      ClearKVCache(llm_inference_context_.prefill_input_buffers));
   return absl::OkStatus();
 }
 
@@ -3304,7 +3330,8 @@ absl::Status LlmLiteRtNpuCompiledModelExecutor::RestoreContext(
       }
     }
   } else {
-    RETURN_IF_ERROR(ClearKVCache(llm_inference_context_.prefill_input_buffers));
+    ABSL_RETURN_IF_ERROR(
+        ClearKVCache(llm_inference_context_.prefill_input_buffers));
   }
 
   processed_tokens_ = context_data->processed_context().processed_tokens();
@@ -3399,7 +3426,7 @@ LlmLiteRtNpuCompiledModelExecutor::CreateForModelHasPerLayerEmbedding(
       verify_output_kv_cache_slice_buffers;
 
   absl::flat_hash_map<absl::string_view, HWQuantParams> kv_quant_params;
-  RETURN_IF_ERROR(AllocateTransformerBuffers(
+  ABSL_RETURN_IF_ERROR(AllocateTransformerBuffers(
       env, transformer_model, llm_compiled_model, gemma_prefill_input_buffers,
       gemma_decode_input_buffers, gemma_verify_input_buffers,
       input_kv_cache_buffers, prefill_output_kv_cache_slice_buffers,
@@ -3476,15 +3503,41 @@ LlmLiteRtNpuCompiledModelExecutor::CreateForModelHasPerLayerEmbedding(
             .Duplicate());
   }
 
+  ::litert::TensorBuffer prefill_valid_mask;
+  auto prefill_valid_mask_it = mask_context.prefill_input_buffers.find(
+      MaskSignatures::kMaskInputValidMask);
+  if (prefill_valid_mask_it != mask_context.prefill_input_buffers.end()) {
+    LITERT_ASSIGN_OR_RETURN(prefill_valid_mask,
+                            prefill_valid_mask_it->second.Duplicate());
+  }
+
+  ::litert::TensorBuffer decode_valid_mask;
+  auto decode_valid_mask_it = mask_context.decode_input_buffers.find(
+      MaskSignatures::kMaskInputValidMask);
+  if (decode_valid_mask_it != mask_context.decode_input_buffers.end()) {
+    LITERT_ASSIGN_OR_RETURN(decode_valid_mask,
+                            decode_valid_mask_it->second.Duplicate());
+  }
+
+  ::litert::TensorBuffer verify_valid_mask;
+  auto verify_valid_mask_it = mask_context.verify_input_buffers.find(
+      MaskSignatures::kMaskInputValidMask);
+  if (verify_valid_mask_it != mask_context.verify_input_buffers.end()) {
+    LITERT_ASSIGN_OR_RETURN(verify_valid_mask,
+                            verify_valid_mask_it->second.Duplicate());
+  }
+
   LITERT_ASSIGN_OR_RETURN(
       auto cache_update_inference_context,
       CreateCacheUpdateInferenceContextWithBufferSharing(
           input_kv_cache_buffers, prefill_output_kv_cache_slice_buffers,
           decode_output_kv_cache_slice_buffers,
           verify_output_kv_cache_slice_buffers, std::move(prefill_input_pos),
-          std::move(decode_input_pos), std::move(verify_input_pos)));
+          std::move(decode_input_pos), std::move(verify_input_pos),
+          std::move(prefill_valid_mask), std::move(decode_valid_mask),
+          std::move(verify_valid_mask)));
 
-  RETURN_IF_ERROR(WarmupInference(
+  ABSL_RETURN_IF_ERROR(WarmupInference(
       llm_compiled_model, llm_inference_context,
       npu_auxiliary_context.npu_auxiliary_compiled_model, rope_context,
       mask_context, cache_update_inference_context));
@@ -3691,15 +3744,10 @@ LlmLiteRtNpuCompiledModelExecutor::CreateForModelHasPerLayerEmbedding(
               env, **mtp_aux_model, drafter_context->mtp_input_buffers));
       speculative_decoding_type = SpeculativeDecodingType::kMTP;
 
-      RETURN_IF_ERROR(WarmupDrafterInference(drafter_context.value(),
-                                             drafter_aux_context.value()));
+      ABSL_RETURN_IF_ERROR(WarmupDrafterInference(drafter_context.value(),
+                                                  drafter_aux_context.value()));
     }
   }
-
-  LITERT_ASSIGN_OR_RETURN(
-      std::unique_ptr<EmbeddingLookupManager>
-          per_layer_embedding_lookup_manager,
-      EmbeddingLookupManager::Create(env, embedder_per_layer_model, false));
 
   auto executor = absl::WrapUnique(new LlmLiteRtNpuCompiledModelExecutor(
       executor_settings, env, std::move(embedder_context),
@@ -3708,13 +3756,14 @@ LlmLiteRtNpuCompiledModelExecutor::CreateForModelHasPerLayerEmbedding(
       std::move(llm_inference_context),
       std::move(cache_update_inference_context), std::move(prefill_runner_set),
       std::move(embedding_lookup_manager),
-      std::move(per_layer_embedding_lookup_manager),
+      /*per_layer_embedding_lookup_manager=*/nullptr,
       std::move(embedder_per_layer_context), quantization_params,
       std::move(ple_table_ptrs), std::move(ple_quant_params),
       std::move(ple_per_tensor_scales), table_count, ple_embedding_dim_val,
       output_type, ple_table_element_type, mul_scale, output_scale,
       final_zero_point, std::move(kv_quant_params), speculative_decoding_type,
-      std::move(drafter_context), std::move(drafter_aux_context)));
+      std::move(drafter_context), std::move(drafter_aux_context),
+      embedder_per_layer_model));
   return executor;
 }
 
@@ -3749,7 +3798,7 @@ LlmLiteRtNpuCompiledModelExecutor::CreateForModelWithoutPerLayerEmbedding(
       verify_output_kv_cache_slice_buffers;
 
   absl::flat_hash_map<absl::string_view, HWQuantParams> kv_quant_params;
-  RETURN_IF_ERROR(AllocateTransformerBuffers(
+  ABSL_RETURN_IF_ERROR(AllocateTransformerBuffers(
       env, transformer_model, llm_compiled_model, gemma_prefill_input_buffers,
       gemma_decode_input_buffers, gemma_verify_input_buffers,
       input_kv_cache_buffers, prefill_output_kv_cache_slice_buffers,
@@ -3841,15 +3890,41 @@ LlmLiteRtNpuCompiledModelExecutor::CreateForModelWithoutPerLayerEmbedding(
       ::litert::TensorBuffer decode_input_pos,
       rope_context.decode_input_buffers[RopeSignatures::kInputPos].Duplicate());
   ::litert::TensorBuffer verify_input_pos;
+  ::litert::TensorBuffer prefill_valid_mask;
+  auto prefill_valid_mask_it = mask_context.prefill_input_buffers.find(
+      MaskSignatures::kMaskInputValidMask);
+  if (prefill_valid_mask_it != mask_context.prefill_input_buffers.end()) {
+    LITERT_ASSIGN_OR_RETURN(prefill_valid_mask,
+                            prefill_valid_mask_it->second.Duplicate());
+  }
+
+  ::litert::TensorBuffer decode_valid_mask;
+  auto decode_valid_mask_it = mask_context.decode_input_buffers.find(
+      MaskSignatures::kMaskInputValidMask);
+  if (decode_valid_mask_it != mask_context.decode_input_buffers.end()) {
+    LITERT_ASSIGN_OR_RETURN(decode_valid_mask,
+                            decode_valid_mask_it->second.Duplicate());
+  }
+
+  ::litert::TensorBuffer verify_valid_mask;
+  auto verify_valid_mask_it = mask_context.verify_input_buffers.find(
+      MaskSignatures::kMaskInputValidMask);
+  if (verify_valid_mask_it != mask_context.verify_input_buffers.end()) {
+    LITERT_ASSIGN_OR_RETURN(verify_valid_mask,
+                            verify_valid_mask_it->second.Duplicate());
+  }
+
   LITERT_ASSIGN_OR_RETURN(
       auto cache_update_inference_context,
       CreateCacheUpdateInferenceContextWithBufferSharing(
           input_kv_cache_buffers, prefill_output_kv_cache_slice_buffers,
           decode_output_kv_cache_slice_buffers,
           verify_output_kv_cache_slice_buffers, std::move(prefill_input_pos),
-          std::move(decode_input_pos), std::move(verify_input_pos)));
+          std::move(decode_input_pos), std::move(verify_input_pos),
+          std::move(prefill_valid_mask), std::move(decode_valid_mask),
+          std::move(verify_valid_mask)));
 
-  RETURN_IF_ERROR(WarmupInference(
+  ABSL_RETURN_IF_ERROR(WarmupInference(
       llm_compiled_model, llm_inference_context,
       npu_auxiliary_context.npu_auxiliary_compiled_model, rope_context,
       mask_context, cache_update_inference_context));

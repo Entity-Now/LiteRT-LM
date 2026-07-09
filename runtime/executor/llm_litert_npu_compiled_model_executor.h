@@ -346,7 +346,8 @@ class LlmLiteRtNpuCompiledModelExecutor : public LlmExecutor {
       SpeculativeDecodingType speculative_decoding_type =
           SpeculativeDecodingType::kNone,
       std::optional<DrafterContext> drafter_context = std::nullopt,
-      std::optional<DrafterAuxContext> drafter_aux_context = std::nullopt)
+      std::optional<DrafterAuxContext> drafter_aux_context = std::nullopt,
+      const litert::Model* embedder_per_layer_model = nullptr)
       : executor_settings_(std::move(executor_settings)),
         env_(llm_env),
         embedder_context_(std::move(embedder_context)),
@@ -376,6 +377,7 @@ class LlmLiteRtNpuCompiledModelExecutor : public LlmExecutor {
         speculative_decoding_type_(speculative_decoding_type),
         drafter_context_(std::move(drafter_context)),
         drafter_aux_context_(std::move(drafter_aux_context)),
+        embedder_per_layer_model_(embedder_per_layer_model),
         per_tensor_logits_scale_(quantization_params.scale),
         per_tensor_logits_zero_point_(quantization_params.zero_point) {
     auto npu_config_status = executor_settings_.GetBackendConfig<NpuConfig>();
@@ -577,7 +579,10 @@ class LlmLiteRtNpuCompiledModelExecutor : public LlmExecutor {
           verify_output_kv_cache_slice_buffers,
       ::litert::TensorBuffer prefill_input_pos,
       ::litert::TensorBuffer decode_input_pos,
-      ::litert::TensorBuffer verify_input_pos);
+      ::litert::TensorBuffer verify_input_pos,
+      ::litert::TensorBuffer prefill_valid_mask,
+      ::litert::TensorBuffer decode_valid_mask,
+      ::litert::TensorBuffer verify_valid_mask);
   // Run a 'warmup' inference on every model (prefill and decode).  This is
   // intended to be called before the first actual inference.
   static absl::Status WarmupInference(
@@ -672,6 +677,7 @@ class LlmLiteRtNpuCompiledModelExecutor : public LlmExecutor {
   ::litert::CompiledModel llm_compiled_model_;
   std::unique_ptr<EmbeddingLookupManager> embedding_lookup_manager_;
   std::unique_ptr<EmbeddingLookupManager> per_layer_embedding_lookup_manager_;
+  const litert::Model* embedder_per_layer_model_ = nullptr;
   std::optional<EmbedderPerLayerContext> embedder_per_layer_context_;
   InferenceContext llm_inference_context_;
   InferenceContext cache_update_inference_context_;

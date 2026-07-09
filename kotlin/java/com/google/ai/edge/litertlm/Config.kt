@@ -35,6 +35,17 @@ data class Channel(val channelName: String, val start: String, val end: String) 
 }
 
 /**
+ * Configuration for thinking/reasoning generation.
+ *
+ * @property enableThinking Whether thinking/reasoning generation is enabled.
+ * @property thinkingTokenBudget The token budget for thinking/reasoning generation. Defaults to -1
+ *   (infinite budget).
+ */
+data class ThinkingConfig
+@JvmOverloads
+constructor(val enableThinking: Boolean = true, val thinkingTokenBudget: Int = -1)
+
+/**
  * Backend for the LiteRT-LM engine.
  *
  * This is the Kotlin version of the C++'s `litert::lm::Backend`.
@@ -116,6 +127,13 @@ data class EngineConfig(
  *   key. If `null`, uses the default channel configuration from the `LlmMetadata`. If empty,
  *   channels will be disabled.
  * @property extraContext Optional context passed to the prompt template rendering.
+ * @property loraConfig Configuration for LoRA weights.
+ * @property prefillPrefaceOnInit Whether to prefill the preface on initialization. Defaults to
+ *   false. Note that this will make createConversation() take longer to finish, so you may want to
+ *   call it in a background thread.
+ * @property maxOutputToken The maximum number of output tokens per decode step. When `null`, use
+ *   the default value from the model or the engine.
+ * @property thinkingConfig Configuration for thinking/reasoning generation.
  */
 data class ConversationConfig
 @JvmOverloads
@@ -128,7 +146,16 @@ constructor(
   val channels: List<Channel>? = null,
   val extraContext: Map<String, Any> = emptyMap(),
   val loraConfig: LoraConfig? = null,
-)
+  val prefillPrefaceOnInit: Boolean = false,
+  val maxOutputToken: Int? = null,
+  val thinkingConfig: ThinkingConfig? = null,
+) {
+  init {
+    require(maxOutputToken == null || maxOutputToken > 0) {
+      "maxOutputToken must be positive or null (use the default from model or engine)."
+    }
+  }
+}
 
 /**
  * Configuration for the sampling process.

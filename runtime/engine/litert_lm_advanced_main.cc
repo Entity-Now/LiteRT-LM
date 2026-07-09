@@ -28,6 +28,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/container/flat_hash_set.h"  // from @com_google_absl
@@ -35,11 +36,13 @@
 #include "absl/flags/parse.h"  // from @com_google_absl
 #include "absl/log/absl_log.h"  // from @com_google_absl
 #include "absl/status/status.h"  // from @com_google_absl
+#include "absl/status/status_macros.h"  // from @com_google_absl
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/strings/numbers.h"  // from @com_google_absl
 #include "absl/strings/str_cat.h"  // from @com_google_absl
 #include "absl/strings/str_split.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
+#include "runtime/components/logits_processor/no_repeat_ngram_config.h"
 #include "runtime/components/logits_processor/repetition_penalty_config.h"
 #include "runtime/components/logits_processor/suppress_tokens_config.h"
 #include "runtime/engine/litert_lm_lib.h"
@@ -135,19 +138,25 @@ litert::lm::RepetitionPenaltyConfig GetRepetitionPenaltyConfig() {
       absl::GetFlag(FLAGS_repetition_window_size));
 }
 
+litert::lm::NoRepeatNgramConfig GetNoRepeatNgramConfig() {
+  return litert::lm::NoRepeatNgramConfig(
+      /*no_repeat_ngram_size=*/absl::GetFlag(FLAGS_no_repeat_ngram_size),
+      /*window_size=*/absl::GetFlag(FLAGS_no_repeat_ngram_window_size));
+}
+
 ::litert::lm::SuppressTokensConfig GetSuppressTokensConfig(
     absl::string_view input) {
-  absl::flat_hash_set<int> result;
+  absl::flat_hash_set<int> suppress_tokens;
 
   for (absl::string_view s :
        absl::StrSplit(input, ',', absl::SkipWhitespace())) {
     int val;
     if (absl::SimpleAtoi(s, &val)) {
-      result.insert(val);
+      suppress_tokens.insert(val);
     }
   }
 
-  return ::litert::lm::SuppressTokensConfig(result);
+  return ::litert::lm::SuppressTokensConfig(std::move(suppress_tokens));
 }
 
 // Writes the metrics to the given file path in protobuf format. Only used in
@@ -159,7 +168,7 @@ absl::Status WriteMetricsToFile(
     return absl::InvalidArgumentError("No metrics to write.");
   }
 
-  ASSIGN_OR_RETURN(auto proto_list, litert::lm::ToProtoList(metrics));
+  ABSL_ASSIGN_OR_RETURN(auto proto_list, litert::lm::ToProtoList(metrics));
 
   std::ofstream out(file_path, std::ios::out | std::ios::binary);
   if (!out) {
@@ -192,7 +201,7 @@ absl::Status MainHelper(int argc, char** argv) {
            "[--max_num_tokens=<max_num_tokens>] "
            "[--prefill_batch_sizes=<size1>[,<size2>,...]]"
            "[--prefill_chunk_size=<prefill_chunk_size>] "
-           "[--vision_backend=<cpu|gpu>] [--audio_backend=<cpu|gpu>] "
+           "[--vision_backend=<cpu|gpu|npu>] [--audio_backend=<cpu|gpu>] "
            "[--sampler_backend=<cpu|gpu>] [--benchmark] "
            "[--benchmark_prefill_tokens=<num_prefill_tokens>] "
            "[--benchmark_decode_tokens=<num_decode_tokens>] "
@@ -225,6 +234,8 @@ absl::Status MainHelper(int argc, char** argv) {
            "[--presence_penalty=<presence_penalty>]"
            "[--frequency_penalty=<frequency_penalty>]"
            "[--repetition_window_size=<repetition_window_size>]"
+           "[--no_repeat_ngram_size=<no_repeat_ngram_size>]"
+           "[--no_repeat_ngram_window_size=<no_repeat_ngram_window_size>]"
            "[--suppress_tokens=<token1,token2,...>]"
            "[--constraint_regex=<constraint_regex>]"
            "[--enable_speculative_decoding=<true|false>]";
@@ -252,7 +263,7 @@ absl::Status MainHelper(int argc, char** argv) {
   settings.max_num_tokens = absl::GetFlag(FLAGS_max_num_tokens);
   settings.max_output_tokens = absl::GetFlag(FLAGS_max_output_tokens);
   settings.max_num_images = absl::GetFlag(FLAGS_max_num_images);
-  ASSIGN_OR_RETURN(
+  ABSL_ASSIGN_OR_RETURN(
       settings.prefill_batch_sizes,
       ParsePrefillBatchSizes(absl::GetFlag(FLAGS_prefill_batch_sizes)));
   settings.prefill_chunk_size = absl::GetFlag(FLAGS_prefill_chunk_size);
@@ -307,6 +318,7 @@ absl::Status MainHelper(int argc, char** argv) {
       : absl::GetFlag(FLAGS_conv_type) == "int8" ? litert::lm::ConvType::kInt8
                                                  : litert::lm::ConvType::kAuto;
   settings.repetition_penalty_config = GetRepetitionPenaltyConfig();
+  settings.no_repeat_ngram_config = GetNoRepeatNgramConfig();
   settings.suppress_tokens_config =
       GetSuppressTokensConfig(absl::GetFlag(FLAGS_suppress_tokens));
   settings.constraint_regex = absl::GetFlag(FLAGS_constraint_regex);
@@ -339,11 +351,11 @@ absl::Status MainHelper(int argc, char** argv) {
   const bool collect_metrics =
       (settings.benchmark && !metric_proto_file_path.empty());
 
-  RETURN_IF_ERROR(
+  ABSL_RETURN_IF_ERROR(
       litert::lm::RunLiteRtLm(settings, collect_metrics ? &metrics : nullptr));
 
   if (collect_metrics) {
-    RETURN_IF_ERROR(WriteMetricsToFile(metrics, metric_proto_file_path));
+    ABSL_RETURN_IF_ERROR(WriteMetricsToFile(metrics, metric_proto_file_path));
   }
 
   return absl::OkStatus();

@@ -39,16 +39,17 @@ class LiteRtLmTestBase(parameterized.TestCase):
         / "litert_lm/runtime/testdata/test_lm.litertlm"
     )
 
-  def _create_engine(self, max_num_tokens=10):
+  def _create_engine(self, max_num_tokens=10, enable_benchmark=False):
     return litert_lm.Engine(
         self.model_path,
         litert_lm.Backend.CPU(),
         max_num_tokens=max_num_tokens,
         cache_dir=":nocache",
+        enable_benchmark=enable_benchmark,
     )
 
-  @staticmethod
-  def _extract_text(stream):
+  @classmethod
+  def _extract_text(cls, stream):
     text_pieces = []
     for chunk in stream:
       content_list = chunk.get("content", [])
@@ -153,7 +154,9 @@ class EngineTest(LiteRtLmTestBase):
   @mock.patch("sys.platform", "linux")
   def test_npu_backend_non_windows(self):
     with self.assertRaisesRegex(
-        RuntimeError, "NPU is supported only for Intel OpenVINO on Windows"
+        RuntimeError,
+        "NPU is supported only for Intel OpenVINO on Windows. Current"
+        " platform is 'linux'.",
     ):
       litert_lm.Backend.NPU()
 
@@ -161,7 +164,10 @@ class EngineTest(LiteRtLmTestBase):
   def test_npu_backend_windows_no_openvino(self):
     with mock.patch.dict("sys.modules", {"openvino": None}):
       with self.assertRaisesRegex(
-          RuntimeError, "NPU is supported only for Intel OpenVINO on Windows"
+          RuntimeError,
+          "NPU is supported only for Intel OpenVINO on Windows. Failed to"
+          " import the 'openvino' package. Please ensure 'openvino' is"
+          " installed.",
       ):
         litert_lm.Backend.NPU()
 
@@ -171,7 +177,10 @@ class EngineTest(LiteRtLmTestBase):
     mock_ov.Core.return_value.available_devices = ["CPU", "GPU"]
     with mock.patch.dict("sys.modules", {"openvino": mock_ov}):
       with self.assertRaisesRegex(
-          RuntimeError, "NPU is supported only for Intel OpenVINO on Windows"
+          RuntimeError,
+          "NPU is supported only for Intel OpenVINO on Windows. No NPU"
+          r" device detected by OpenVINO \(available devices: \['CPU',"
+          r" 'GPU'\]\).",
       ):
         litert_lm.Backend.NPU()
 
@@ -465,6 +474,37 @@ class EngineTest(LiteRtLmTestBase):
       message = conversation.send_message(user_message)
       self.assertEqual(message["role"], "assistant")
 
+  def test_conversation_with_thinking_config(self):
+    thinking_config = litert_lm.ThinkingConfig(
+        enable_thinking=True, thinking_token_budget=10
+    )
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation(
+            thinking_config=thinking_config
+        ) as conversation,
+    ):
+      user_message = {"role": "user", "content": "Hello world!"}
+      message = conversation.send_message(
+          user_message, thinking_config=thinking_config
+      )
+      self.assertEqual(message["role"], "assistant")
+      self.assertEqual(conversation.thinking_config, thinking_config)
+
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation(
+            thinking_config=thinking_config
+        ) as conversation,
+    ):
+      user_message = {"role": "user", "content": "Hello world!"}
+      responses = list(
+          conversation.send_message_async(
+              user_message, thinking_config=thinking_config
+          )
+      )
+      self.assertNotEmpty(responses)
+
   def test_conversation_token_count(self):
     with (
         self._create_engine() as engine,
@@ -474,6 +514,19 @@ class EngineTest(LiteRtLmTestBase):
       user_message = {"role": "user", "content": "Hello world!"}
       conversation.send_message(user_message)
       self.assertEqual(conversation.token_count, 10)
+
+  def test_conversation_get_benchmark_info(self):
+    with (
+        self._create_engine(enable_benchmark=True) as engine,
+        engine.create_conversation() as conversation,
+    ):
+      user_message = {"role": "user", "content": "Hello world!"}
+      conversation.send_message(user_message)
+      info = conversation.get_benchmark_info()
+      self.assertIsInstance(info, litert_lm.BenchmarkInfo)
+      self.assertGreaterEqual(info.init_time_in_second, 0.0)
+      self.assertGreater(info.last_prefill_token_count, 0)
+      self.assertGreater(info.last_decode_token_count, 0)
 
   def test_create_conversation_with_extra_context(self):
     extra_context = {"key": "value"}

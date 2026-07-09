@@ -25,11 +25,13 @@
 
 #include "absl/base/nullability.h"  // from @com_google_absl
 #include "absl/status/status.h"  // from @com_google_absl
+#include "absl/status/status_macros.h"  // from @com_google_absl
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/time/time.h"  // from @com_google_absl
 #include "support/util/io_types.h"  // from @litert
 #include "runtime/components/logits_processor/constrained_decoding/constraint.h"
+#include "runtime/components/logits_processor/no_repeat_ngram_config.h"
 #include "runtime/components/logits_processor/repetition_penalty_config.h"
 #include "runtime/components/logits_processor/suppress_tokens_config.h"
 #include "runtime/proto/engine.pb.h"
@@ -250,9 +252,9 @@ class BenchmarkInfo {
   absl::Status TimeTextToTokenIdsEnd(uint64_t num_tokens);
   // Time the duration between two consecutive marks. Useful for profiling the
   // pipeline at a specific point. For example:
-  //   RETURN_IF_ERROR(benchmark_info.TimeMarkDelta("sampling"));
+  //   ABSL_RETURN_IF_ERROR(benchmark_info.TimeMarkDelta("sampling"));
   //   ... actual sampling logics ...
-  //   RETURN_IF_ERROR(benchmark_info.TimeMarkDelta("sampling"));
+  //   ABSL_RETURN_IF_ERROR(benchmark_info.TimeMarkDelta("sampling"));
   //
   // The method will return the duration as the time delta between the two
   // TimeMarkDelta("sampling") calls. The duration will be stored / recorded for
@@ -316,8 +318,19 @@ class DecodeConfig {
   }
 
   // Returns the repetition penalty config.
-  RepetitionPenaltyConfig GetRepetitionPenaltyConfig() const {
+  const RepetitionPenaltyConfig& GetRepetitionPenaltyConfig() const {
     return repetition_penalty_config_;
+  }
+
+  // Sets the no repeat ngram config to ban repetitive ngrams during decoding.
+  void SetNoRepeatNgramConfig(
+      const NoRepeatNgramConfig& no_repeat_ngram_config) {
+    no_repeat_ngram_config_ = no_repeat_ngram_config;
+  }
+
+  // Returns the no repeat ngram config.
+  NoRepeatNgramConfig GetNoRepeatNgramConfig() const {
+    return no_repeat_ngram_config_;
   }
 
   // Sets the suppress tokens config to suppress specific tokens during
@@ -328,7 +341,7 @@ class DecodeConfig {
   }
 
   // Returns the suppress tokens config.
-  SuppressTokensConfig GetSuppressTokensConfig() const {
+  const std::optional<SuppressTokensConfig>& GetSuppressTokensConfig() const {
     return suppress_tokens_config_;
   }
 
@@ -350,15 +363,51 @@ class DecodeConfig {
   // Returns the max output tokens.
   std::optional<int> GetMaxOutputTokens() const { return max_output_tokens_; }
 
+  // Sets the thinking token budget.
+  void SetThinkingTokenBudget(int thinking_token_budget) {
+    thinking_token_budget_ = thinking_token_budget;
+  }
+
+  // Returns the thinking token budget.
+  std::optional<int> GetThinkingTokenBudget() const {
+    return thinking_token_budget_;
+  }
+
+  // Sets the token IDs that signal the start of the thinking process.
+  void SetThinkingStartTokenIds(std::vector<int> thinking_start_token_ids) {
+    thinking_start_token_ids_ = std::move(thinking_start_token_ids);
+  }
+
+  // Returns the token IDs that signal the start of the thinking process.
+  const std::vector<int>& GetThinkingStartTokenIds() const {
+    return thinking_start_token_ids_;
+  }
+
+  // Sets the token IDs that signal the end of the thinking process.
+  void SetThinkingEndTokenIds(std::vector<int> thinking_end_token_ids) {
+    thinking_end_token_ids_ = std::move(thinking_end_token_ids);
+  }
+
+  // Returns the token IDs that signal the end of the thinking process.
+  const std::vector<int>& GetThinkingEndTokenIds() const {
+    return thinking_end_token_ids_;
+  }
+
  private:
   DecodeConfig() = default;
 
   RepetitionPenaltyConfig repetition_penalty_config_ =
       RepetitionPenaltyConfig::Default();
-  SuppressTokensConfig suppress_tokens_config_ =
-      SuppressTokensConfig::Default();
+  NoRepeatNgramConfig no_repeat_ngram_config_ = NoRepeatNgramConfig::Default();
+  // If set, the suppress tokens config will be used to suppress specific tokens
+  // during decoding. If not set, the suppress tokens config will be loaded from
+  // the model assets.
+  std::optional<SuppressTokensConfig> suppress_tokens_config_ = std::nullopt;
   Constraint* absl_nullable constraint_ = nullptr;
   std::optional<int> max_output_tokens_ = std::nullopt;
+  std::optional<int> thinking_token_budget_ = std::nullopt;
+  std::vector<int> thinking_start_token_ids_;
+  std::vector<int> thinking_end_token_ids_;
 };
 
 }  // namespace litert::lm

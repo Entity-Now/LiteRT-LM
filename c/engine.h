@@ -59,6 +59,9 @@ typedef struct LiteRtLmConversation LiteRtLmConversation;
 typedef struct LiteRtLmConversationOptionalArgs
     LiteRtLmConversationOptionalArgs;
 
+// Opaque pointer for the LiteRT LM Thinking Config.
+typedef struct LiteRtLmThinkingConfig LiteRtLmThinkingConfig;
+
 // Opaque pointer for a JSON response.
 typedef struct LiteRtLmJsonResponse LiteRtLmJsonResponse;
 
@@ -267,6 +270,42 @@ void litert_lm_conversation_config_set_stream_tool_calls(
     LiteRtLmConversationConfig* config, bool stream_tool_calls,
     const char* channel_name);
 
+// Creates a default LiteRT LM Thinking Config (enabled with infinite budget
+// -1). The caller is responsible for destroying the config using
+// `litert_lm_thinking_config_delete`.
+// @return A pointer to the created config, or NULL on failure.
+LITERT_LM_C_API_EXPORT
+LiteRtLmThinkingConfig* litert_lm_thinking_config_create();
+
+// Destroys a LiteRT LM Thinking Config.
+// @param config The config to destroy.
+LITERT_LM_C_API_EXPORT
+void litert_lm_thinking_config_delete(LiteRtLmThinkingConfig* config);
+
+// Sets whether thinking/reasoning generation is enabled.
+// @param config The config to modify.
+// @param enable_thinking Whether thinking is enabled.
+LITERT_LM_C_API_EXPORT
+void litert_lm_thinking_config_set_enable_thinking(
+    LiteRtLmThinkingConfig* config, bool enable_thinking);
+
+// Sets the thinking token budget.
+// @param config The config to modify.
+// @param thinking_token_budget Budget for token-by-token reasoning generation
+// (-1 for infinite).
+LITERT_LM_C_API_EXPORT
+void litert_lm_thinking_config_set_thinking_token_budget(
+    LiteRtLmThinkingConfig* config, int thinking_token_budget);
+
+// Sets the thinking config for this conversation config.
+// @param config The config to modify.
+// @param thinking_config The thinking config to set. If NULL, clears any
+// previously set thinking config.
+LITERT_LM_C_API_EXPORT
+void litert_lm_conversation_config_set_thinking_config(
+    LiteRtLmConversationConfig* config,
+    const LiteRtLmThinkingConfig* thinking_config);
+
 // Destroys a LiteRT LM Conversation Config.
 // @param config The config to destroy.
 LITERT_LM_C_API_EXPORT
@@ -299,11 +338,28 @@ LITERT_LM_C_API_EXPORT
 void litert_lm_conversation_optional_args_set_max_output_tokens(
     LiteRtLmConversationOptionalArgs* optional_args, int max_output_tokens);
 
-// Sets the minimum log level for the LiteRT LM library.
-// Log levels are: 0=VERBOSE, 1=DEBUG, 2=INFO, 3=WARNING, 4=ERROR, 5=FATAL,
-// 1000=SILENT.
+// Sets the thinking config for the conversation optional args.
+// @param optional_args The optional args to modify.
+// @param thinking_config The thinking config to set. If NULL, clears any
+// previously set thinking config.
 LITERT_LM_C_API_EXPORT
-void litert_lm_set_min_log_level(int level);
+void litert_lm_conversation_optional_args_set_thinking_config(
+    LiteRtLmConversationOptionalArgs* optional_args,
+    const LiteRtLmThinkingConfig* thinking_config);
+
+// Represents the log severity / level.
+typedef enum {
+  kLiteRtLmLogSeverityVerbose = 0,
+  kLiteRtLmLogSeverityDebug = 1,
+  kLiteRtLmLogSeverityInfo = 2,
+  kLiteRtLmLogSeverityWarning = 3,
+  kLiteRtLmLogSeverityError = 4,
+  kLiteRtLmLogSeverityFatal = 5,
+  kLiteRtLmLogSeveritySilent = 1000,
+} LiteRtLmLogSeverity;
+// Sets the minimum log level for the LiteRT LM library.
+LITERT_LM_C_API_EXPORT
+void litert_lm_set_min_log_level(LiteRtLmLogSeverity level);
 
 // Represents the type of input data.
 typedef enum {
@@ -428,15 +484,22 @@ LITERT_LM_C_API_EXPORT
 void litert_lm_engine_settings_set_litert_dispatch_lib_dir(
     LiteRtLmEngineSettings* settings, const char* lib_dir);
 
+// Represents the activation data type.
+typedef enum {
+  kLiteRtLmActivationDataTypeFloat32 = 0,
+  kLiteRtLmActivationDataTypeFloat16 = 1,
+  kLiteRtLmActivationDataTypeInt16 = 2,
+  kLiteRtLmActivationDataTypeInt8 = 3,
+} LiteRtLmActivationDataType;
+
 // Sets the activation data type.
 //
 // @param settings The engine settings.
-// @param activation_data_type_int The activation data type. See
-// `ActivationDataType` in executor_settings_base.h for the possible values
-// (e.g., 0 for F32, 1 for F16, 2 for I16, 3 for I8).
+// @param activation_data_type The activation data type.
 LITERT_LM_C_API_EXPORT
 void litert_lm_engine_settings_set_activation_data_type(
-    LiteRtLmEngineSettings* settings, int activation_data_type_int);
+    LiteRtLmEngineSettings* settings,
+    LiteRtLmActivationDataType activation_data_type);
 
 // Sets the prefill chunk size for the engine. Only applicable for CPU backend
 // with dynamic models.

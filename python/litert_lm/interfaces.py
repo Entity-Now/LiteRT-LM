@@ -76,7 +76,9 @@ class NPU(Backend):
     """Initializes the NPU backend.
 
     Raises:
-      RuntimeError: If the NPU backend is not supported on the current platform.
+      RuntimeError: If the NPU backend is not supported on the current platform,
+        if the 'openvino' package fails to import, or if no NPU device is
+        detected.
     """
     if self.litert_dispatch_lib_dir == "":  # pylint: disable=g-explicit-bool-comparison
       logging.warning(
@@ -87,33 +89,46 @@ class NPU(Backend):
       object.__setattr__(self, "litert_dispatch_lib_dir", "")
       return
     elif self.litert_dispatch_lib_dir is None:
-      object.__setattr__(self, "litert_dispatch_lib_dir", "")
+      if sys.platform != "win32":
+        raise RuntimeError(
+            "NPU is supported only for Intel OpenVINO on Windows. Current"
+            f" platform is '{sys.platform}'."
+        )
 
-      if sys.platform == "win32":
-        try:
-          import openvino as ov  # pylint: disable=g-import-not-at-top  # pytype: disable=import-error
+      try:
+        import openvino as ov  # pylint: disable=g-import-not-at-top  # pytype: disable=import-error
+      except ImportError as e:
+        raise RuntimeError(
+            "NPU is supported only for Intel OpenVINO on Windows. Failed to"
+            " import the 'openvino' package. Please ensure 'openvino' is"
+            " installed."
+        ) from e
 
-          if "NPU" in ov.Core().available_devices:
-            litert_dispatch_lib_dir = str(
-                resources.files(__package__)
-                / "vendors/intel_openvino/dispatch/"
-            )
-            object.__setattr__(
-                self, "litert_dispatch_lib_dir", litert_dispatch_lib_dir
-            )
+      available_devices = ov.Core().available_devices
+      if "NPU" not in available_devices:
+        raise RuntimeError(
+            "NPU is supported only for Intel OpenVINO on Windows. No NPU"
+            " device detected by OpenVINO (available devices:"
+            f" {available_devices})."
+        )
 
-            # openvino package place the NPU libs in "libs".
-            # Includes to PATH so Windows can load it.
-            libs_dir = os.path.join(os.path.dirname(ov.__file__), "libs")
-            os.environ["PATH"] = os.environ["PATH"] + ";" + libs_dir
-        except ImportError:
-          pass
+      litert_dispatch_lib_dir = str(
+          resources.files(__package__) / "vendors/intel_openvino/dispatch/"
+      )
+      object.__setattr__(
+          self, "litert_dispatch_lib_dir", litert_dispatch_lib_dir
+      )
+
+      # openvino package place the NPU libs in "libs".
+      # Includes to PATH so Windows can load it.
+      libs_dir = os.path.join(os.path.dirname(ov.__file__), "libs")
+      os.environ["PATH"] = os.environ["PATH"] + ";" + libs_dir
 
     if not self.litert_dispatch_lib_dir:
       raise RuntimeError(
-          "NPU is supported only for Intel OpenVINO on Windows. It is"
-          " expected to install the 'openvino' package and have an NPU"
-          " available."
+          "NPU backend could not be initialized because an invalid or"
+          f" empty litert_dispatch_lib_dir ({self.litert_dispatch_lib_dir!r})"
+          " was provided."
       )
 
   def __eq__(self, other: Any) -> bool:
@@ -175,6 +190,20 @@ class Tool(abc.ABC):
     Returns:
         The result of the tool execution.
     """
+
+
+@dataclasses.dataclass
+class ThinkingConfig:
+  """Configuration for thinking/reasoning generation.
+
+  Attributes:
+      enable_thinking: Whether thinking is enabled.
+      thinking_token_budget: Budget for token-by-token reasoning generation.
+        Defaults to -1 (infinite budget).
+  """
+
+  enable_thinking: bool = True
+  thinking_token_budget: int = -1
 
 
 @dataclasses.dataclass
@@ -255,6 +284,7 @@ class AbstractEngine(abc.ABC):
       lora_rank_config: Configuration for LoRA ranks.
       bos_token_id: The BOS token id for the model if one is configured.
       eos_token_ids: Stop token sequences configured for the model.
+      activation_data_type: The activation data type used for model execution.
   """
 
   model_path: str
@@ -292,6 +322,7 @@ class AbstractEngine(abc.ABC):
       automatic_tool_calling: bool = True,
       extra_context: collections.abc.Mapping[str, Any] | None = None,
       filter_channel_content_from_kv_cache: bool = False,
+      thinking_config: ThinkingConfig | None = None,
       sampler_config: SamplerConfig | None = None,
       lora_config: LoraConfig | None = None,
       max_output_tokens: int | None = None,
@@ -310,6 +341,7 @@ class AbstractEngine(abc.ABC):
           from the KV cache. This is useful when the model responds with
           "channel" content, e.g. thinking/reasoning tokens, that should not be
           persisted in the KV cache.
+        thinking_config: Configuration for thinking/reasoning generation.
         sampler_config: Configuration for the sampling process. If None, then
           uses the engine's default values.
         lora_config: Configuration for LoRA adapters.
@@ -365,6 +397,7 @@ class AbstractConversation(abc.ABC):
       tool_event_handler: A handler for tool call and tool response events.
       automatic_tool_calling: Whether to automatically call tools.
       extra_context: Extra context for the chat template.
+      thinking_config: Configuration for thinking/reasoning generation.
       sampler_config: Configuration for the sampling process.
       lora_config: Configuration for LoRA adapters.
       max_output_tokens: The maximum number of output tokens.
@@ -384,6 +417,7 @@ class AbstractConversation(abc.ABC):
       tool_event_handler: ToolEventHandler | None = None,
       automatic_tool_calling: bool = True,
       extra_context: collections.abc.Mapping[str, Any] | None = None,
+      thinking_config: ThinkingConfig | None = None,
       sampler_config: SamplerConfig | None = None,
       lora_config: LoraConfig | None = None,
       max_output_tokens: int | None = None,
@@ -398,6 +432,7 @@ class AbstractConversation(abc.ABC):
         automatic_tool_calling: Whether to automatically call tools. If False,
           tool calls will be returned to the user to execute.
         extra_context: Extra context for the chat template.
+        thinking_config: Configuration for thinking/reasoning generation.
         sampler_config: Configuration for the sampling process. If None, then
           uses the engine's default values.
         lora_config: Configuration for LoRA adapters.
@@ -408,6 +443,7 @@ class AbstractConversation(abc.ABC):
     self.tool_event_handler = tool_event_handler
     self.automatic_tool_calling = automatic_tool_calling
     self.extra_context = extra_context or {}
+    self.thinking_config = thinking_config
     self.sampler_config = sampler_config
     self.lora_config = lora_config
     self.max_output_tokens = max_output_tokens
@@ -426,6 +462,7 @@ class AbstractConversation(abc.ABC):
       message: str | Contents | Message | collections.abc.Mapping[str, Any],
       *,
       max_output_tokens: int | None = None,
+      thinking_config: ThinkingConfig | None = None,
   ) -> collections.abc.Mapping[str, Any]:
     """Sends a message and returns the response.
 
@@ -437,6 +474,7 @@ class AbstractConversation(abc.ABC):
           tool calling is disabled and a tool response is required), or
           `collections.abc.Mapping` (super flexible raw dictionary format).
         max_output_tokens: The maximum number of output tokens.
+        thinking_config: Configuration for thinking/reasoning generation.
 
     Returns:
         A dictionary containing the model's response. The structure is:
@@ -449,6 +487,7 @@ class AbstractConversation(abc.ABC):
       message: str | Contents | Message | collections.abc.Mapping[str, Any],
       *,
       max_output_tokens: int | None = None,
+      thinking_config: ThinkingConfig | None = None,
   ) -> collections.abc.Iterator[collections.abc.Mapping[str, Any]]:
     """Sends a message and streams the response.
 
@@ -460,6 +499,7 @@ class AbstractConversation(abc.ABC):
           tool calling is disabled and a tool response is required), or
           `collections.abc.Mapping` (super flexible raw dictionary format).
         max_output_tokens: The maximum number of output tokens.
+        thinking_config: Configuration for thinking/reasoning generation.
 
     Returns:
         An iterator yielding dictionaries containing chunks of the model's
@@ -490,6 +530,10 @@ class AbstractConversation(abc.ABC):
   def token_count(self) -> int:
     """The number of tokens in the KV Cache (prefill + decode)."""
 
+  @abc.abstractmethod
+  def get_benchmark_info(self) -> BenchmarkInfo:
+    """Returns the benchmark info of the conversation."""
+
   def cancel_process(self) -> None:
     """Cancels the current inference process."""
 
@@ -518,6 +562,52 @@ class BenchmarkInfo:
   last_decode_tokens_per_second: float
 
 
+def create_benchmark_info(lib: Any, info_ptr: Any) -> BenchmarkInfo:
+  """Creates a BenchmarkInfo object from a C API pointer."""
+  num_prefill_turns = lib.litert_lm_benchmark_info_get_num_prefill_turns(
+      info_ptr
+  )
+  if num_prefill_turns > 0:
+    last_prefill_count = (
+        lib.litert_lm_benchmark_info_get_prefill_token_count_at(
+            info_ptr, num_prefill_turns - 1
+        )
+    )
+    last_prefill_tps = (
+        lib.litert_lm_benchmark_info_get_prefill_tokens_per_sec_at(
+            info_ptr, num_prefill_turns - 1
+        )
+    )
+  else:
+    last_prefill_count = 0
+    last_prefill_tps = 0.0
+
+  num_decode_turns = lib.litert_lm_benchmark_info_get_num_decode_turns(info_ptr)
+  if num_decode_turns > 0:
+    last_decode_count = lib.litert_lm_benchmark_info_get_decode_token_count_at(
+        info_ptr, num_decode_turns - 1
+    )
+    last_decode_tps = lib.litert_lm_benchmark_info_get_decode_tokens_per_sec_at(
+        info_ptr, num_decode_turns - 1
+    )
+  else:
+    last_decode_count = 0
+    last_decode_tps = 0.0
+
+  return BenchmarkInfo(
+      init_time_in_second=lib.litert_lm_benchmark_info_get_total_init_time_in_second(
+          info_ptr
+      ),
+      time_to_first_token_in_second=lib.litert_lm_benchmark_info_get_time_to_first_token(
+          info_ptr
+      ),
+      last_prefill_token_count=last_prefill_count,
+      last_prefill_tokens_per_second=last_prefill_tps,
+      last_decode_token_count=last_decode_count,
+      last_decode_tokens_per_second=last_decode_tps,
+  )
+
+
 @dataclasses.dataclass
 class AbstractBenchmark(abc.ABC):
   """Abstract base class for LiteRT-LM benchmarks.
@@ -537,9 +627,9 @@ class AbstractBenchmark(abc.ABC):
       bos_token_id: The BOS token id for the model if one is configured.
       eos_token_ids: Stop token sequences configured for the model.
       prompt: The custom prompt string to tokenize and run. If the tokenized
-        prompt is shorter than `prefill_tokens`, the remaining tokens are
-        padded with zero. If it is longer, the prompt is truncated to
-        `prefill_tokens`.
+        prompt is shorter than `prefill_tokens`, the remaining tokens are padded
+        with zero. If it is longer, the prompt is truncated to `prefill_tokens`.
+      activation_data_type: The activation data type used for model execution.
   """
 
   model_path: str
@@ -649,6 +739,10 @@ class AbstractSession(abc.ABC):
         Responses: The log likelihood scores of the target text given the
         existing session state.
     """
+
+  @abc.abstractmethod
+  def get_benchmark_info(self) -> BenchmarkInfo:
+    """Returns the benchmark info of the session."""
 
   @abc.abstractmethod
   def cancel_process(self) -> None:
