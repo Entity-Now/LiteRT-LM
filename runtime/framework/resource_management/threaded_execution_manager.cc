@@ -829,23 +829,27 @@ absl::Status ThreadedExecutionManager::AddPrefillTask(
       if (executor_inputs.status().message() ==
               "No token IDs found in preprocessed_contents." &&
           session_info->session_config.AudioModalityEnabled()) {
-        auto audio_executor = resource_manager_->AcquireAudioExecutor();
-        if (!audio_executor.ok()) {
-          FinishTaskAndLogErrors(task_id, audio_executor.status(),
-                                 std::move(callback));
-          return;
-        }
-        auto audio_executor_properties =
-            (*audio_executor)->GetAudioExecutorProperties();
-        if (!audio_executor_properties.ok()) {
-          FinishTaskAndLogErrors(task_id, audio_executor_properties.status(),
-                                 std::move(callback));
-          return;
-        }
-        if (!audio_executor_properties->is_streaming_model) {
-          FinishTaskAndLogErrors(task_id, executor_inputs.status(),
-                                 std::move(callback));
-          return;
+        {
+          auto audio_executor = resource_manager_->AcquireAudioExecutor();
+          if (!audio_executor.ok()) {
+            FinishTaskAndLogErrors(task_id, audio_executor.status(),
+                                   std::move(callback));
+            return;
+          }
+          auto audio_executor_properties =
+              (*audio_executor)->GetAudioExecutorProperties();
+          if (!audio_executor_properties.ok()) {
+            audio_executor.value().reset();
+            FinishTaskAndLogErrors(task_id, audio_executor_properties.status(),
+                                   std::move(callback));
+            return;
+          }
+          if (!audio_executor_properties->is_streaming_model) {
+            audio_executor.value().reset();
+            FinishTaskAndLogErrors(task_id, executor_inputs.status(),
+                                   std::move(callback));
+            return;
+          }
         }
         ABSL_VLOG(1)
             << "Input audio chunk is smaller than the audio encoder input "

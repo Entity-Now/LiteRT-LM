@@ -34,7 +34,6 @@ pytype_strict_library(
     deps = [
         "//python/litert_lm",
         "//python/litert_lm_builder:litertlm_builder",
-        "//python/litert_lm_builder:litertlm_peek",
         "//python/litert_lm_cli:help_formatter",
         "//python/litert_lm_cli:model",
         requirement("click"),
