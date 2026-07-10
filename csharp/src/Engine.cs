@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//      http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,9 @@
 // limitations under the License.
 
 using System;
-using System.Linq;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
 using System.Text.Json;
 
 namespace LiteRTLM.Core
@@ -22,10 +24,11 @@ namespace LiteRTLM.Core
     {
         private readonly object _lock = new object();
         private IntPtr _handle = IntPtr.Zero;
+        private bool _disposed;
 
         public EngineConfig EngineConfig { get; }
 
-        public bool IsInitialized => _handle != IntPtr.Zero;
+        public bool IsInitialized => _handle != IntPtr.Zero && !_disposed;
 
         public Engine(EngineConfig engineConfig)
         {
@@ -46,7 +49,12 @@ namespace LiteRTLM.Core
         {
             lock (_lock)
             {
-                if (IsInitialized)
+                if (_disposed)
+                {
+                    throw new ObjectDisposedException(nameof(Engine));
+                }
+
+                if (_handle != IntPtr.Zero)
                 {
                     throw new LiteRTLMEngineException("Engine is already initialized.");
                 }
@@ -59,8 +67,7 @@ namespace LiteRTLM.Core
                     EngineConfig.ModelPath,
                     backendStr,
                     visionBackendStr,
-                    audioBackendStr
-                );
+                    audioBackendStr);
 
                 if (settings == IntPtr.Zero)
                 {
@@ -73,6 +80,7 @@ namespace LiteRTLM.Core
                     {
                         LiteRtLmNative.litert_lm_engine_settings_set_max_num_tokens(settings, EngineConfig.MaxNumTokens.Value);
                     }
+
                     ApplyBackendSettings(settings, EngineConfig.Backend, isAudioBackend: false);
                     ApplyBackendSettings(settings, EngineConfig.AudioBackend, isAudioBackend: true);
 
@@ -87,7 +95,8 @@ namespace LiteRTLM.Core
                         if (EngineConfig.LoraRank.Value > 0)
                         {
                             int[] ranks = { EngineConfig.LoraRank.Value };
-                            int status = LiteRtLmNative.litert_lm_engine_settings_set_supported_lora_ranks(settings, ranks, (UIntPtr)1);
+                            int status = LiteRtLmNative.litert_lm_engine_settings_set_supported_lora_ranks(
+                                settings, ranks, (UIntPtr)1);
                             if (status != 0)
                             {
                                 throw new LiteRTLMEngineException("Failed to set supported LoRA ranks.");
@@ -97,11 +106,13 @@ namespace LiteRTLM.Core
 
                     if (EngineConfig.AudioLoraRank.HasValue)
                     {
-                        LiteRtLmNative.litert_lm_engine_settings_set_audio_lora_rank(settings, EngineConfig.AudioLoraRank.Value);
+                        LiteRtLmNative.litert_lm_engine_settings_set_audio_lora_rank(
+                            settings, EngineConfig.AudioLoraRank.Value);
                         if (EngineConfig.AudioLoraRank.Value > 0)
                         {
                             int[] ranks = { EngineConfig.AudioLoraRank.Value };
-                            int status = LiteRtLmNative.litert_lm_engine_settings_set_supported_audio_lora_ranks(settings, ranks, (UIntPtr)1);
+                            int status = LiteRtLmNative.litert_lm_engine_settings_set_supported_audio_lora_ranks(
+                                settings, ranks, (UIntPtr)1);
                             if (status != 0)
                             {
                                 throw new LiteRTLMEngineException("Failed to set supported Audio LoRA ranks.");
@@ -112,8 +123,10 @@ namespace LiteRTLM.Core
                     if (benchmarkPrefillTokens.HasValue && benchmarkDecodeTokens.HasValue)
                     {
                         LiteRtLmNative.litert_lm_engine_settings_enable_benchmark(settings);
-                        LiteRtLmNative.litert_lm_engine_settings_set_num_prefill_tokens(settings, benchmarkPrefillTokens.Value);
-                        LiteRtLmNative.litert_lm_engine_settings_set_num_decode_tokens(settings, benchmarkDecodeTokens.Value);
+                        LiteRtLmNative.litert_lm_engine_settings_set_num_prefill_tokens(
+                            settings, benchmarkPrefillTokens.Value);
+                        LiteRtLmNative.litert_lm_engine_settings_set_num_decode_tokens(
+                            settings, benchmarkDecodeTokens.Value);
                     }
                     else if (ExperimentalFlags.EnableBenchmark)
                     {
@@ -122,7 +135,8 @@ namespace LiteRTLM.Core
 
                     if (ExperimentalFlags.EnableSpeculativeDecoding.HasValue)
                     {
-                        LiteRtLmNative.litert_lm_engine_settings_set_enable_speculative_decoding(settings, ExperimentalFlags.EnableSpeculativeDecoding.Value);
+                        LiteRtLmNative.litert_lm_engine_settings_set_enable_speculative_decoding(
+                            settings, ExperimentalFlags.EnableSpeculativeDecoding.Value);
                     }
 
                     _handle = LiteRtLmNative.litert_lm_engine_create(settings);
@@ -154,137 +168,196 @@ namespace LiteRTLM.Core
 
                 if (isAudioBackend)
                 {
-                    LiteRtLmNative.litert_lm_engine_settings_set_audio_num_threads(settings, backend.ThreadCount.Value);
+                    LiteRtLmNative.litert_lm_engine_settings_set_audio_num_threads(
+                        settings, backend.ThreadCount.Value);
                 }
                 else
                 {
-                    LiteRtLmNative.litert_lm_engine_settings_set_num_threads(settings, backend.ThreadCount.Value);
+                    LiteRtLmNative.litert_lm_engine_settings_set_num_threads(
+                        settings, backend.ThreadCount.Value);
                 }
             }
 
             if (!string.IsNullOrEmpty(backend.NativeLibraryDir))
             {
-                LiteRtLmNative.litert_lm_engine_settings_set_litert_dispatch_lib_dir(settings, backend.NativeLibraryDir);
+                LiteRtLmNative.litert_lm_engine_settings_set_litert_dispatch_lib_dir(
+                    settings, backend.NativeLibraryDir);
             }
         }
 
         public Conversation CreateConversation(ConversationConfig config = null)
         {
+            // Snapshot engine handle under lock only — do not hold the lock across heavy JSON /
+            // native conversation creation so concurrent CreateConversation calls can proceed.
+            IntPtr engineHandle;
             lock (_lock)
             {
-                if (!IsInitialized)
+                if (_disposed)
+                {
+                    throw new ObjectDisposedException(nameof(Engine));
+                }
+
+                if (_handle == IntPtr.Zero)
                 {
                     throw new LiteRTLMEngineException("Engine is not initialized.");
                 }
 
-                var conversationConfig = config ?? new ConversationConfig();
-                
-                var systemMessage = conversationConfig.SystemMessage;
-                int initialSystemMessageCount = conversationConfig.InitialMessages.Count(m => m.Role == Role.System);
+                engineHandle = _handle;
+            }
 
-                if (systemMessage != null && initialSystemMessageCount > 0)
+            var conversationConfig = config ?? new ConversationConfig();
+
+            Message systemMessage = conversationConfig.SystemMessage;
+            int initialSystemMessageCount = 0;
+            var initialMessages = conversationConfig.InitialMessages;
+            for (int i = 0; i < initialMessages.Count; i++)
+            {
+                if (initialMessages[i].Role == Role.System)
                 {
-                    throw new LiteRTLMConfigException("Cannot set both systemMessage and have system messages in initialMessages.");
+                    initialSystemMessageCount++;
                 }
-                if (initialSystemMessageCount > 1)
+            }
+
+            if (systemMessage != null && initialSystemMessageCount > 0)
+            {
+                throw new LiteRTLMConfigException(
+                    "Cannot set both systemMessage and have system messages in initialMessages.");
+            }
+
+            if (initialSystemMessageCount > 1)
+            {
+                throw new LiteRTLMConfigException("Cannot have multiple system messages in initialMessages.");
+            }
+
+            var toolManager = new ToolManager(conversationConfig.Tools);
+
+            string systemMessageJsonStr = systemMessage != null ? systemMessage.ToJsonString() : string.Empty;
+            string toolDescriptionJsonStr = toolManager.ToolsJsonDescription;
+            string messagesJsonStr = SerializeInitialMessages(initialMessages);
+
+            IntPtr cSessionConfig = LiteRtLmNative.litert_lm_session_config_create();
+            if (cSessionConfig == IntPtr.Zero)
+            {
+                throw new LiteRTLMEngineException("Failed to create session config.");
+            }
+
+            try
+            {
+                if (conversationConfig.SamplerConfig != null)
                 {
-                    throw new LiteRTLMConfigException("Cannot have multiple system messages in initialMessages.");
+                    var samplerParams = conversationConfig.SamplerConfig;
+                    var paramsStruct = new LiteRtLmSamplerParams
+                    {
+                        type = LiteRtLmSamplerType.TopP,
+                        top_k = samplerParams.TopK,
+                        top_p = samplerParams.TopP,
+                        temperature = samplerParams.Temperature,
+                        seed = samplerParams.Seed
+                    };
+                    LiteRtLmNative.litert_lm_session_config_set_sampler_params(cSessionConfig, ref paramsStruct);
                 }
 
-                var toolManager = new ToolManager(conversationConfig.Tools);
-
-                string systemMessageJsonStr = systemMessage != null ? systemMessage.ToJsonString() : string.Empty;
-                string toolDescriptionJsonStr = toolManager.ToolsJsonDescription;
-
-                string messagesJsonStr = string.Empty;
-                if (conversationConfig.InitialMessages.Count > 0)
+                if (!string.IsNullOrEmpty(conversationConfig.LoraPath))
                 {
-                    var initialList = conversationConfig.InitialMessages.Select(m => m.ToJsonDictionary()).ToList();
-                    messagesJsonStr = JsonSerializer.Serialize(initialList);
+                    int status = LiteRtLmNative.litert_lm_session_config_set_lora_path(
+                        cSessionConfig, conversationConfig.LoraPath);
+                    if (status != 0)
+                    {
+                        throw new LiteRTLMEngineException("Failed to set LoRA path.");
+                    }
                 }
 
-                IntPtr cSessionConfig = LiteRtLmNative.litert_lm_session_config_create();
-                if (cSessionConfig == IntPtr.Zero)
+                if (!string.IsNullOrEmpty(conversationConfig.AudioLoraPath))
                 {
-                    throw new LiteRTLMEngineException("Failed to create session config.");
+                    int status = LiteRtLmNative.litert_lm_session_config_set_audio_lora_path(
+                        cSessionConfig, conversationConfig.AudioLoraPath);
+                    if (status != 0)
+                    {
+                        throw new LiteRTLMEngineException("Failed to set Audio LoRA path.");
+                    }
+                }
+
+                IntPtr cConversationConfig = LiteRtLmNative.litert_lm_conversation_config_create();
+                if (cConversationConfig == IntPtr.Zero)
+                {
+                    throw new LiteRTLMEngineException("Failed to create conversation config.");
                 }
 
                 try
                 {
-                    if (conversationConfig.SamplerConfig != null)
+                    LiteRtLmNative.litert_lm_conversation_config_set_session_config(
+                        cConversationConfig, cSessionConfig);
+                    if (!string.IsNullOrEmpty(systemMessageJsonStr))
                     {
-                        var samplerParams = conversationConfig.SamplerConfig;
-                        var paramsStruct = new LiteRtLmSamplerParams
-                        {
-                            type = LiteRtLmSamplerType.TopP,
-                            top_k = samplerParams.TopK,
-                            top_p = samplerParams.TopP,
-                            temperature = samplerParams.Temperature,
-                            seed = samplerParams.Seed
-                        };
-                        LiteRtLmNative.litert_lm_session_config_set_sampler_params(cSessionConfig, ref paramsStruct);
+                        LiteRtLmNative.litert_lm_conversation_config_set_system_message(
+                            cConversationConfig, systemMessageJsonStr);
                     }
 
-                    if (!string.IsNullOrEmpty(conversationConfig.LoraPath))
+                    if (!string.IsNullOrEmpty(toolDescriptionJsonStr))
                     {
-                        int status = LiteRtLmNative.litert_lm_session_config_set_lora_path(cSessionConfig, conversationConfig.LoraPath);
-                        if (status != 0)
+                        LiteRtLmNative.litert_lm_conversation_config_set_tools(
+                            cConversationConfig, toolDescriptionJsonStr);
+                    }
+
+                    if (!string.IsNullOrEmpty(messagesJsonStr))
+                    {
+                        LiteRtLmNative.litert_lm_conversation_config_set_messages(
+                            cConversationConfig, messagesJsonStr);
+                    }
+
+                    LiteRtLmNative.litert_lm_conversation_config_set_enable_constrained_decoding(
+                        cConversationConfig, ExperimentalFlags.EnableConversationConstrainedDecoding);
+
+                    // Re-check engine still alive right before native create (may have been disposed).
+                    lock (_lock)
+                    {
+                        if (_disposed || _handle == IntPtr.Zero || _handle != engineHandle)
                         {
-                            throw new LiteRTLMEngineException("Failed to set LoRA path.");
+                            throw new ObjectDisposedException(nameof(Engine));
                         }
                     }
 
-                    if (!string.IsNullOrEmpty(conversationConfig.AudioLoraPath))
+                    IntPtr conversationHandle = LiteRtLmNative.litert_lm_conversation_create(
+                        engineHandle, cConversationConfig);
+                    if (conversationHandle == IntPtr.Zero)
                     {
-                        int status = LiteRtLmNative.litert_lm_session_config_set_audio_lora_path(cSessionConfig, conversationConfig.AudioLoraPath);
-                        if (status != 0)
-                        {
-                            throw new LiteRTLMEngineException("Failed to set Audio LoRA path.");
-                        }
+                        throw new LiteRTLMEngineException("Failed to create conversation.");
                     }
 
-                    IntPtr cConversationConfig = LiteRtLmNative.litert_lm_conversation_config_create();
-                    if (cConversationConfig == IntPtr.Zero)
-                    {
-                        throw new LiteRTLMEngineException("Failed to create conversation config.");
-                    }
-
-                    try
-                    {
-                        LiteRtLmNative.litert_lm_conversation_config_set_session_config(cConversationConfig, cSessionConfig);
-                        if (!string.IsNullOrEmpty(systemMessageJsonStr))
-                        {
-                            LiteRtLmNative.litert_lm_conversation_config_set_system_message(cConversationConfig, systemMessageJsonStr);
-                        }
-                        if (!string.IsNullOrEmpty(toolDescriptionJsonStr))
-                        {
-                            LiteRtLmNative.litert_lm_conversation_config_set_tools(cConversationConfig, toolDescriptionJsonStr);
-                        }
-                        if (!string.IsNullOrEmpty(messagesJsonStr))
-                        {
-                            LiteRtLmNative.litert_lm_conversation_config_set_messages(cConversationConfig, messagesJsonStr);
-                        }
-
-                        LiteRtLmNative.litert_lm_conversation_config_set_enable_constrained_decoding(
-                            cConversationConfig, ExperimentalFlags.EnableConversationConstrainedDecoding);
-
-                        IntPtr conversationHandle = LiteRtLmNative.litert_lm_conversation_create(_handle, cConversationConfig);
-                        if (conversationHandle == IntPtr.Zero)
-                        {
-                            throw new LiteRTLMEngineException("Failed to create conversation.");
-                        }
-
-                        return new Conversation(conversationHandle, toolManager);
-                    }
-                    finally
-                    {
-                        LiteRtLmNative.litert_lm_conversation_config_delete(cConversationConfig);
-                    }
+                    return new Conversation(conversationHandle, toolManager);
                 }
                 finally
                 {
-                    LiteRtLmNative.litert_lm_session_config_delete(cSessionConfig);
+                    LiteRtLmNative.litert_lm_conversation_config_delete(cConversationConfig);
                 }
+            }
+            finally
+            {
+                LiteRtLmNative.litert_lm_session_config_delete(cSessionConfig);
+            }
+        }
+
+        private static string SerializeInitialMessages(IList<Message> messages)
+        {
+            if (messages == null || messages.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            using (var stream = new MemoryStream(256 * messages.Count))
+            {
+                using (var writer = new Utf8JsonWriter(stream))
+                {
+                    writer.WriteStartArray();
+                    for (int i = 0; i < messages.Count; i++)
+                    {
+                        messages[i].WriteJson(writer);
+                    }
+
+                    writer.WriteEndArray();
+                }
+
+                return Encoding.UTF8.GetString(stream.GetBuffer(), 0, (int)stream.Length);
             }
         }
 
@@ -292,18 +365,20 @@ namespace LiteRTLM.Core
         {
             lock (_lock)
             {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                _disposed = true;
                 if (_handle != IntPtr.Zero)
                 {
                     LiteRtLmNative.litert_lm_engine_delete(_handle);
                     _handle = IntPtr.Zero;
                 }
             }
-            GC.SuppressFinalize(this);
-        }
 
-        ~Engine()
-        {
-            Dispose();
+            GC.SuppressFinalize(this);
         }
     }
 }

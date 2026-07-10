@@ -59,13 +59,13 @@ namespace LiteRTLM.Core
         public UIntPtr size;
     }
 
+    /// <summary>
+    /// Matches C API: <c>typedef void (*LiteRtLmStreamCallback)(void* callback_data, const LiteRtLmStreamChunk* chunk);</c>
+    /// Chunk fields must be read via <see cref="LiteRtLmNative.litert_lm_stream_chunk_get_text"/> etc.,
+    /// not as separate callback parameters.
+    /// </summary>
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate void LiteRtLmStreamCallback(
-        IntPtr callbackData,
-        IntPtr chunkPtr,
-        [MarshalAs(UnmanagedType.U1)] bool isFinal,
-        IntPtr errorMsgPtr
-    );
+    public delegate void LiteRtLmStreamCallback(IntPtr callbackData, IntPtr chunkPtr);
 
     internal static class LiteRtLmNative
     {
@@ -90,6 +90,16 @@ namespace LiteRTLM.Core
         }
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern IntPtr litert_lm_stream_chunk_get_text(IntPtr chunk);
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+        [return: MarshalAs(UnmanagedType.U1)]
+        public static extern bool litert_lm_stream_chunk_is_final(IntPtr chunk);
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern IntPtr litert_lm_stream_chunk_get_error(IntPtr chunk);
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern IntPtr litert_lm_session_config_create();
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
@@ -109,11 +119,11 @@ namespace LiteRTLM.Core
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern int litert_lm_session_config_set_lora_path(
-            IntPtr config, [MarshalAs(UnmanagedType.LPStr)] string lora_path);
+            IntPtr config, [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Utf8StringMarshaler))] string lora_path);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern int litert_lm_session_config_set_audio_lora_path(
-            IntPtr config, [MarshalAs(UnmanagedType.LPStr)] string audio_lora_path);
+            IntPtr config, [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Utf8StringMarshaler))] string audio_lora_path);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern IntPtr litert_lm_conversation_config_create();
@@ -124,19 +134,19 @@ namespace LiteRTLM.Core
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void litert_lm_conversation_config_set_system_message(
-            IntPtr config, [MarshalAs(UnmanagedType.LPStr)] string system_message_json);
+            IntPtr config, [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Utf8StringMarshaler))] string system_message_json);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void litert_lm_conversation_config_set_tools(
-            IntPtr config, [MarshalAs(UnmanagedType.LPStr)] string tools_json);
+            IntPtr config, [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Utf8StringMarshaler))] string tools_json);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void litert_lm_conversation_config_set_messages(
-            IntPtr config, [MarshalAs(UnmanagedType.LPStr)] string messages_json);
+            IntPtr config, [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Utf8StringMarshaler))] string messages_json);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void litert_lm_conversation_config_set_extra_context(
-            IntPtr config, [MarshalAs(UnmanagedType.LPStr)] string extra_context_json);
+            IntPtr config, [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Utf8StringMarshaler))] string extra_context_json);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void litert_lm_conversation_config_set_enable_constrained_decoding(
@@ -168,10 +178,10 @@ namespace LiteRTLM.Core
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern IntPtr litert_lm_engine_settings_create(
-            [MarshalAs(UnmanagedType.LPStr)] string model_path,
-            [MarshalAs(UnmanagedType.LPStr)] string backend_str,
-            [MarshalAs(UnmanagedType.LPStr)] string vision_backend_str,
-            [MarshalAs(UnmanagedType.LPStr)] string audio_backend_str);
+            [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Utf8StringMarshaler))] string model_path,
+            [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Utf8StringMarshaler))] string backend_str,
+            [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Utf8StringMarshaler))] string vision_backend_str,
+            [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Utf8StringMarshaler))] string audio_backend_str);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void litert_lm_engine_settings_delete(IntPtr settings);
@@ -198,11 +208,11 @@ namespace LiteRTLM.Core
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void litert_lm_engine_settings_set_cache_dir(
-            IntPtr settings, [MarshalAs(UnmanagedType.LPStr)] string cache_dir);
+            IntPtr settings, [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Utf8StringMarshaler))] string cache_dir);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void litert_lm_engine_settings_set_litert_dispatch_lib_dir(
-            IntPtr settings, [MarshalAs(UnmanagedType.LPStr)] string lib_dir);
+            IntPtr settings, [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Utf8StringMarshaler))] string lib_dir);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void litert_lm_engine_settings_set_activation_data_type(
@@ -261,8 +271,8 @@ namespace LiteRTLM.Core
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern IntPtr litert_lm_conversation_send_message(
             IntPtr conversation,
-            [MarshalAs(UnmanagedType.LPStr)] string message_json,
-            [MarshalAs(UnmanagedType.LPStr)] string extra_context_json,
+            [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Utf8StringMarshaler))] string message_json,
+            [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Utf8StringMarshaler))] string extra_context_json,
             IntPtr optional_args);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
@@ -274,15 +284,15 @@ namespace LiteRTLM.Core
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern int litert_lm_conversation_send_message_stream(
             IntPtr conversation,
-            [MarshalAs(UnmanagedType.LPStr)] string message_json,
-            [MarshalAs(UnmanagedType.LPStr)] string extra_context_json,
+            [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Utf8StringMarshaler))] string message_json,
+            [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Utf8StringMarshaler))] string extra_context_json,
             IntPtr optional_args,
             LiteRtLmStreamCallback callback,
             IntPtr callback_data);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern IntPtr litert_lm_conversation_render_message_to_string(
-            IntPtr conversation, [MarshalAs(UnmanagedType.LPStr)] string message_json);
+            IntPtr conversation, [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Utf8StringMarshaler))] string message_json);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void litert_lm_conversation_cancel_process(IntPtr conversation);
@@ -330,7 +340,7 @@ namespace LiteRTLM.Core
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern IntPtr litert_lm_engine_tokenize(
-            IntPtr engine, [MarshalAs(UnmanagedType.LPStr)] string text);
+            IntPtr engine, [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Utf8StringMarshaler))] string text);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void litert_lm_tokenize_result_delete(IntPtr result);
@@ -384,7 +394,7 @@ namespace LiteRTLM.Core
         // --- Capabilities ---
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern IntPtr litert_lm_loaded_file_create(
-            [MarshalAs(UnmanagedType.LPStr)] string litertlm_path);
+            [MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(Utf8StringMarshaler))] string litertlm_path);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void litert_lm_loaded_file_delete(IntPtr loaded_file);

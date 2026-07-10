@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//      http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,7 +14,9 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 
 namespace LiteRTLM.Core
@@ -31,6 +33,7 @@ namespace LiteRTLM.Core
     {
         public abstract string Type { get; }
         public abstract Dictionary<string, string> ToJsonDictionary();
+        internal abstract void WriteJson(Utf8JsonWriter writer);
     }
 
     public class TextContent : Content
@@ -50,6 +53,14 @@ namespace LiteRTLM.Core
                 { "type", "text" },
                 { "text", Text }
             };
+        }
+
+        internal override void WriteJson(Utf8JsonWriter writer)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("type", "text");
+            writer.WriteString("text", Text);
+            writer.WriteEndObject();
         }
     }
 
@@ -71,6 +82,14 @@ namespace LiteRTLM.Core
                 { "blob", Convert.ToBase64String(Data) }
             };
         }
+
+        internal override void WriteJson(Utf8JsonWriter writer)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("type", "image");
+            writer.WriteString("blob", Convert.ToBase64String(Data));
+            writer.WriteEndObject();
+        }
     }
 
     public class ImageFileContent : Content
@@ -90,6 +109,14 @@ namespace LiteRTLM.Core
                 { "type", "image" },
                 { "path", Path }
             };
+        }
+
+        internal override void WriteJson(Utf8JsonWriter writer)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("type", "image");
+            writer.WriteString("path", Path);
+            writer.WriteEndObject();
         }
     }
 
@@ -111,6 +138,14 @@ namespace LiteRTLM.Core
                 { "blob", Convert.ToBase64String(Data) }
             };
         }
+
+        internal override void WriteJson(Utf8JsonWriter writer)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("type", "audio");
+            writer.WriteString("blob", Convert.ToBase64String(Data));
+            writer.WriteEndObject();
+        }
     }
 
     public class AudioFileContent : Content
@@ -131,6 +166,14 @@ namespace LiteRTLM.Core
                 { "path", Path }
             };
         }
+
+        internal override void WriteJson(Utf8JsonWriter writer)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("type", "audio");
+            writer.WriteString("path", Path);
+            writer.WriteEndObject();
+        }
     }
 
     public class Message
@@ -139,7 +182,19 @@ namespace LiteRTLM.Core
         public List<Content> Contents { get; }
         public Dictionary<string, string> Channels { get; }
 
-        public string Text => string.Join(" ", Contents.OfType<TextContent>().Select(c => c.Text));
+        public string Text
+        {
+            get
+            {
+                // Avoid LINQ allocation on hot paths when there is a single text part.
+                if (Contents.Count == 1 && Contents[0] is TextContent single)
+                {
+                    return single.Text;
+                }
+
+                return string.Join(" ", Contents.OfType<TextContent>().Select(c => c.Text));
+            }
+        }
 
         public Message(string text, Role role = Role.User, Dictionary<string, string> channels = null)
         {
@@ -163,7 +218,7 @@ namespace LiteRTLM.Core
         {
             var dict = new Dictionary<string, object>
             {
-                { "role", Role.ToString().ToLowerInvariant() }
+                { "role", RoleToJson(Role) }
             };
 
             if (Contents.Count > 0)
@@ -179,9 +234,93 @@ namespace LiteRTLM.Core
             return dict;
         }
 
+        /// <summary>
+        /// Fast path: stream JSON directly without Dictionary&lt;string, object&gt; intermediate graphs.
+        /// </summary>
         public string ToJsonString()
         {
-            return JsonSerializer.Serialize(ToJsonDictionary());
+            // Common case: plain user/model text message.
+            if (Contents.Count == 1 &&
+                Contents[0] is TextContent textOnly &&
+                Channels.Count == 0)
+            {
+                return WriteSimpleTextMessage(Role, textOnly.Text);
+            }
+
+            using (var stream = new MemoryStream(256))
+            {
+                using (var writer = new Utf8JsonWriter(stream))
+                {
+                    WriteJson(writer);
+                }
+
+                return Encoding.UTF8.GetString(stream.GetBuffer(), 0, (int)stream.Length);
+            }
+        }
+
+        internal void WriteJson(Utf8JsonWriter writer)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("role", RoleToJson(Role));
+
+            if (Contents.Count > 0)
+            {
+                writer.WritePropertyName("content");
+                writer.WriteStartArray();
+                for (int i = 0; i < Contents.Count; i++)
+                {
+                    Contents[i].WriteJson(writer);
+                }
+                writer.WriteEndArray();
+            }
+
+            if (Channels.Count > 0)
+            {
+                writer.WritePropertyName("channels");
+                writer.WriteStartObject();
+                foreach (var kv in Channels)
+                {
+                    writer.WriteString(kv.Key, kv.Value);
+                }
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndObject();
+        }
+
+        internal static string RoleToJson(Role role)
+        {
+            switch (role)
+            {
+                case Role.System: return "system";
+                case Role.User: return "user";
+                case Role.Tool: return "tool";
+                case Role.Model:
+                default: return "model";
+            }
+        }
+
+        private static string WriteSimpleTextMessage(Role role, string text)
+        {
+            // Hot path: single Utf8JsonWriter pass, no Dictionary graph.
+            using (var stream = new MemoryStream(128 + (text?.Length ?? 0) * 2))
+            {
+                using (var writer = new Utf8JsonWriter(stream))
+                {
+                    writer.WriteStartObject();
+                    writer.WriteString("role", RoleToJson(role));
+                    writer.WritePropertyName("content");
+                    writer.WriteStartArray();
+                    writer.WriteStartObject();
+                    writer.WriteString("type", "text");
+                    writer.WriteString("text", text ?? string.Empty);
+                    writer.WriteEndObject();
+                    writer.WriteEndArray();
+                    writer.WriteEndObject();
+                }
+
+                return Encoding.UTF8.GetString(stream.GetBuffer(), 0, (int)stream.Length);
+            }
         }
 
         public override string ToString() => Text;
