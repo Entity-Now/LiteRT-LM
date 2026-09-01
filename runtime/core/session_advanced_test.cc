@@ -37,20 +37,19 @@
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/time/clock.h"  // from @com_google_absl
 #include "absl/time/time.h"  // from @com_google_absl
+#include "absl/types/span.h"  // from @com_google_absl
 #include "litert/cc/litert_environment.h"  // from @litert
 #include "litert/cc/litert_tensor_buffer.h"  // from @litert
 #include "litert/test/matchers.h"  // from @litert
-#include "support/tokenizer/sentencepiece_tokenizer.h"  // from @litert
-#include "support/tokenizer/tokenizer.h"  // from @litert
-#include "runtime/components/logits_processor/constrained_decoding/fake_constraint.h"
-#include "runtime/components/logits_processor/no_repeat_ngram_config.h"
-#include "runtime/components/logits_processor/repetition_penalty_config.h"
-#include "runtime/components/logits_processor/suppress_tokens_config.h"
+#include "runtime/components/constrained_decoding/fake_constraint.h"
+#include "runtime/components/constrained_decoding/no_repeat_ngram_config.h"
+#include "runtime/components/constrained_decoding/repetition_penalty_config.h"
+#include "runtime/components/constrained_decoding/suppress_tokens_config.h"
 #include "runtime/components/model_resources.h"
 #include "runtime/core/session_utils.h"
 #include "runtime/engine/engine_settings.h"
 #include "runtime/engine/io_types.h"
-#include "runtime/executor/audio_executor_settings.h"
+#include "runtime/executor/audio/audio_executor_settings.h"
 #include "runtime/executor/executor_settings_base.h"
 #include "runtime/executor/fake_llm_executor.h"
 #include "runtime/framework/resource_management/execution_manager.h"
@@ -59,6 +58,8 @@
 #include "runtime/util/scoped_file.h"
 #include "runtime/util/status_macros.h"
 #include "runtime/util/test_utils.h"  // IWYU pragma: keep
+#include "support/tokenizer/sentencepiece_tokenizer.h"
+#include "support/tokenizer/tokenizer.h"
 
 namespace litert::lm {
 
@@ -142,7 +143,7 @@ class ExtendedTokenizer : public Tokenizer {
   }
 
   absl::StatusOr<std::string> TokenIdsToText(
-      const std::vector<int>& token_ids) override {
+      absl::Span<const int> token_ids, bool skip_special_tokens) override {
     std::vector<std::string> token_strs;
     std::vector<int> current_standard_tokens;
     for (int token_id : token_ids) {
@@ -378,7 +379,7 @@ TEST_F(SessionAdvancedTest, RunDecodeWithInternalSampler) {
   EXPECT_EQ(responses.GetTexts().size(), 1);
   // The response is " How's it going?" since "!" is the stop token which is
   // not included in the response.
-  EXPECT_EQ(responses.GetTexts()[0], " How's it going?");
+  EXPECT_EQ(responses.GetTexts()[0], "How's it going?");
   EXPECT_THAT(responses.GetTokenIds()[0],
               testing::ElementsAre(224, 24, 8, 66, 246, 18, 2295));
   ASSERT_OK_AND_ASSIGN(auto text_from_ids,
@@ -418,7 +419,7 @@ TEST_F(SessionAdvancedTest, RunDecodeWithMaxOutputTokens) {
   ASSERT_OK_AND_ASSIGN(auto responses, session->RunDecode(decode_config));
   // Expect a single output candidate.
   EXPECT_EQ(responses.GetTexts().size(), 1);
-  EXPECT_EQ(responses.GetTexts()[0], " How'");
+  EXPECT_EQ(responses.GetTexts()[0], "How'");
   EXPECT_THAT(responses.GetTokenIds()[0], testing::ElementsAre(224, 24));
   ASSERT_OK_AND_ASSIGN(auto text_from_ids,
                        tokenizer_->TokenIdsToText(responses.GetTokenIds()[0]));
@@ -458,7 +459,7 @@ TEST_F(SessionAdvancedTest, RunDecodeWithExternalSampler) {
   EXPECT_EQ(responses.GetTexts().size(), 1);
   // The response is " How's it going?" since "!" is the stop token which is
   // not included in the response.
-  EXPECT_EQ(responses.GetTexts()[0], " How's it going?");
+  EXPECT_EQ(responses.GetTexts()[0], "How's it going?");
   EXPECT_THAT(responses.GetTokenIds()[0],
               testing::ElementsAre(224, 24, 8, 66, 246, 18, 2295));
   ASSERT_OK_AND_ASSIGN(auto text_from_ids,
@@ -505,19 +506,19 @@ TEST_F(SessionAdvancedTest,
   EXPECT_EQ(responses.GetTexts().size(), 3);
   // The response is " How's it going?" since "!" is the stop token which is
   // not included in the response.
-  EXPECT_EQ(responses.GetTexts()[0], " How's it going?");
+  EXPECT_EQ(responses.GetTexts()[0], "How's it going?");
   EXPECT_THAT(responses.GetTokenIds()[0],
               testing::ElementsAre(224, 24, 8, 66, 246, 18, 2295));
   ASSERT_OK_AND_ASSIGN(auto text_from_ids0,
                        tokenizer_->TokenIdsToText(responses.GetTokenIds()[0]));
   EXPECT_EQ(text_from_ids0, responses.GetTexts()[0]);
-  EXPECT_EQ(responses.GetTexts()[1], " Hello World");
+  EXPECT_EQ(responses.GetTexts()[1], "Hello World");
   EXPECT_THAT(responses.GetTokenIds()[1],
               testing::ElementsAre(90, 547, 58, 735, 210, 466));
   ASSERT_OK_AND_ASSIGN(auto text_from_ids1,
                        tokenizer_->TokenIdsToText(responses.GetTokenIds()[1]));
   EXPECT_EQ(text_from_ids1, responses.GetTexts()[1]);
-  EXPECT_EQ(responses.GetTexts()[2], " How's it going?");
+  EXPECT_EQ(responses.GetTexts()[2], "How's it going?");
   EXPECT_THAT(responses.GetTokenIds()[2],
               testing::ElementsAre(224, 24, 8, 66, 246, 18, 2295));
   ASSERT_OK_AND_ASSIGN(auto text_from_ids2,
@@ -566,19 +567,19 @@ TEST_F(SessionAdvancedTest,
   EXPECT_EQ(responses.GetTexts().size(), 3);
   // The response is " How's it going?" since "!" is the stop token which is
   // not included in the response.
-  EXPECT_EQ(responses.GetTexts()[0], " How's it going?");
+  EXPECT_EQ(responses.GetTexts()[0], "How's it going?");
   EXPECT_THAT(responses.GetTokenIds()[0],
               testing::ElementsAre(224, 24, 8, 66, 246, 18, 2295));
   ASSERT_OK_AND_ASSIGN(auto text_from_ids0,
                        tokenizer_->TokenIdsToText(responses.GetTokenIds()[0]));
   EXPECT_EQ(text_from_ids0, responses.GetTexts()[0]);
-  EXPECT_EQ(responses.GetTexts()[1], " Hello World");
+  EXPECT_EQ(responses.GetTexts()[1], "Hello World");
   EXPECT_THAT(responses.GetTokenIds()[1],
               testing::ElementsAre(90, 547, 58, 735, 210, 466));
   ASSERT_OK_AND_ASSIGN(auto text_from_ids1,
                        tokenizer_->TokenIdsToText(responses.GetTokenIds()[1]));
   EXPECT_EQ(text_from_ids1, responses.GetTexts()[1]);
-  EXPECT_EQ(responses.GetTexts()[2], " How's it going?");
+  EXPECT_EQ(responses.GetTexts()[2], "How's it going?");
   EXPECT_THAT(responses.GetTokenIds()[2],
               testing::ElementsAre(224, 24, 8, 66, 246, 18, 2295));
   ASSERT_OK_AND_ASSIGN(auto text_from_ids2,
@@ -941,7 +942,7 @@ TEST_F(SessionAdvancedTest, RunDecodeWithRepetitionPenaltyConfig) {
   // Expect the output to be " How's it go" instead of " How's it go go go"
   // because the repetition penalty is applied.
   EXPECT_EQ(responses.GetTexts().size(), 1);
-  EXPECT_EQ(responses.GetTexts()[0], " How's it go");
+  EXPECT_EQ(responses.GetTexts()[0], "How's it go");
   ASSERT_OK_AND_ASSIGN(auto text_from_ids,
                        tokenizer_->TokenIdsToText(responses.GetTokenIds()[0]));
   EXPECT_EQ(text_from_ids, responses.GetTexts()[0]);
@@ -989,7 +990,7 @@ TEST_F(SessionAdvancedTest, RunDecodeWithNoRepeatNgramConfig) {
   // Expect the output to be " How's it going go" instead of " How's it going
   // going" because the second "going" is banned.
   EXPECT_EQ(responses.GetTexts().size(), 1);
-  EXPECT_EQ(responses.GetTexts()[0], " How's it going go");
+  EXPECT_EQ(responses.GetTexts()[0], "How's it going go");
   ASSERT_OK_AND_ASSIGN(auto text_from_ids,
                        tokenizer_->TokenIdsToText(responses.GetTokenIds()[0]));
   EXPECT_EQ(text_from_ids, responses.GetTexts()[0]);
@@ -1034,7 +1035,7 @@ TEST_F(SessionAdvancedTest, RunDecodeWithSuppressTokensConfig) {
   // Expect the output to be " How's it" instead of " How's it go go go"
   // because the token 246 is suppressed.
   EXPECT_EQ(responses.GetTexts().size(), 1);
-  EXPECT_EQ(responses.GetTexts()[0], " How's it");
+  EXPECT_EQ(responses.GetTexts()[0], "How's it");
   ASSERT_OK_AND_ASSIGN(auto text_from_ids,
                        tokenizer_->TokenIdsToText(responses.GetTokenIds()[0]));
   EXPECT_EQ(text_from_ids, responses.GetTexts()[0]);
@@ -1079,7 +1080,7 @@ TEST_F(SessionAdvancedTest,
   // Expect the output to be " How's it" instead of " How's it go go go"
   // because the token 246 is suppressed.
   EXPECT_EQ(responses.GetTexts().size(), 1);
-  EXPECT_EQ(responses.GetTexts()[0], " How's it go");
+  EXPECT_EQ(responses.GetTexts()[0], "How's it go");
   ASSERT_OK_AND_ASSIGN(auto text_from_ids,
                        tokenizer_->TokenIdsToText(responses.GetTokenIds()[0]));
   EXPECT_EQ(text_from_ids, responses.GetTexts()[0]);
@@ -1225,7 +1226,7 @@ TEST_F(SessionAdvancedTest, SaveAndRewindCheckpoint) {
   decode_config.SetMaxOutputTokens(2);
   ASSERT_OK_AND_ASSIGN(auto responses1, session->RunDecode(decode_config));
   EXPECT_EQ(responses1.GetTexts().size(), 1);
-  EXPECT_EQ(responses1.GetTexts()[0], " How'");
+  EXPECT_EQ(responses1.GetTexts()[0], "How'");
   EXPECT_THAT(responses1.GetTokenIds()[0], testing::ElementsAre(224, 24));
   ASSERT_OK_AND_ASSIGN(auto text_from_ids1,
                        tokenizer_->TokenIdsToText(responses1.GetTokenIds()[0]));
@@ -1238,7 +1239,7 @@ TEST_F(SessionAdvancedTest, SaveAndRewindCheckpoint) {
   decode_config.SetMaxOutputTokens(2);
   ASSERT_OK_AND_ASSIGN(auto responses3, session->RunDecode(decode_config));
   EXPECT_EQ(responses3.GetTexts().size(), 1);
-  EXPECT_EQ(responses3.GetTexts()[0], " How'");
+  EXPECT_EQ(responses3.GetTexts()[0], "How'");
   EXPECT_THAT(responses3.GetTokenIds()[0], testing::ElementsAre(224, 24));
   ASSERT_OK_AND_ASSIGN(auto text_from_ids3,
                        tokenizer_->TokenIdsToText(responses3.GetTokenIds()[0]));
@@ -1297,7 +1298,7 @@ TEST_F(SessionAdvancedTest, RewindToStep) {
   decode_config.SetMaxOutputTokens(2);
   ASSERT_OK_AND_ASSIGN(auto responses1, session->RunDecode(decode_config));
   EXPECT_EQ(responses1.GetTexts().size(), 1);
-  EXPECT_EQ(responses1.GetTexts()[0], " How'");
+  EXPECT_EQ(responses1.GetTexts()[0], "How'");
   EXPECT_THAT(responses1.GetTokenIds()[0], testing::ElementsAre(224, 24));
 
   // After decode, step should be 10.
@@ -1312,7 +1313,7 @@ TEST_F(SessionAdvancedTest, RewindToStep) {
   // Decoded tokens should be the same as the first decode call.
   ASSERT_OK_AND_ASSIGN(auto responses2, session->RunDecode(decode_config));
   EXPECT_EQ(responses2.GetTexts().size(), 1);
-  EXPECT_EQ(responses2.GetTexts()[0], " How'");
+  EXPECT_EQ(responses2.GetTexts()[0], "How'");
   EXPECT_THAT(responses2.GetTokenIds()[0], testing::ElementsAre(224, 24));
 
   // Rewind to step 0.
@@ -1357,7 +1358,7 @@ TEST_F(SessionAdvancedTest, RewindToCheckpointRecoversFromFailure) {
   // If fixed, it will succeed and return the expected tokens.
   ASSERT_OK_AND_ASSIGN(auto responses, session->RunDecode(decode_config));
   EXPECT_EQ(responses.GetTexts().size(), 1);
-  EXPECT_EQ(responses.GetTexts()[0], " How'");
+  EXPECT_EQ(responses.GetTexts()[0], "How'");
 }
 
 TEST_F(SessionAdvancedTest, RewindToStepRecoversFromFailure) {
@@ -1395,7 +1396,7 @@ TEST_F(SessionAdvancedTest, RewindToStepRecoversFromFailure) {
   // If fixed, it will succeed.
   ASSERT_OK_AND_ASSIGN(auto responses, session->RunDecode(decode_config));
   EXPECT_EQ(responses.GetTexts().size(), 1);
-  EXPECT_EQ(responses.GetTexts()[0], " How'");
+  EXPECT_EQ(responses.GetTexts()[0], "How'");
 }
 
 TEST_F(SessionAdvancedTest, RunPrefillAndDecodeAsyncWithInternalSampler) {
@@ -1437,7 +1438,7 @@ TEST_F(SessionAdvancedTest, RunPrefillAndDecodeAsyncWithInternalSampler) {
   EXPECT_EQ(task_state, TaskState::kDone);
   EXPECT_EQ(texts.size(), 7);
   EXPECT_THAT(texts,
-              testing::ElementsAre(" How", "'", "s", " it", " go", "ing", "?"));
+              testing::ElementsAre("How", "'", "s", " it", " go", "ing", "?"));
 }
 
 TEST_F(SessionAdvancedTest, RunPrefillAndDecodeAsyncWithExternalSampler) {
@@ -1481,7 +1482,7 @@ TEST_F(SessionAdvancedTest, RunPrefillAndDecodeAsyncWithExternalSampler) {
   EXPECT_EQ(task_state, TaskState::kDone);
   EXPECT_EQ(texts.size(), 7);
   EXPECT_THAT(texts,
-              testing::ElementsAre(" How", "'", "s", " it", " go", "ing", "?"));
+              testing::ElementsAre("How", "'", "s", " it", " go", "ing", "?"));
 }
 
 TEST_F(SessionAdvancedTest, GenerateContentStream) {
@@ -1521,7 +1522,7 @@ TEST_F(SessionAdvancedTest, GenerateContentStream) {
   EXPECT_EQ(task_state, TaskState::kDone);
   EXPECT_EQ(texts.size(), 7);
   EXPECT_THAT(texts,
-              testing::ElementsAre(" How", "'", "s", " it", " go", "ing", "?"));
+              testing::ElementsAre("How", "'", "s", " it", " go", "ing", "?"));
 }
 
 TEST_F(SessionAdvancedTest, RunPrefillEmptyInput) {

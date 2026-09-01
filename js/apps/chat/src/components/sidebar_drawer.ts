@@ -15,13 +15,14 @@
  */
 
 import {css, html, LitElement} from 'lit';
-import {customElement, property} from 'lit/decorators.js';
+import {customElement, property, query} from 'lit/decorators.js';
 
 import {LlmChatStateController} from '../state_controller.js';
 import {MODELS, PartialSettingsSchema, Settings} from '../stores/settings_store.js';
 import {sharedStyles} from '../styles/shared_styles.js';
 
 import './custom_dropdown';
+import type {CustomDropdown} from './custom_dropdown.js';
 
 /* tslint:disable:no-new-decorators */
 
@@ -30,6 +31,9 @@ import './custom_dropdown';
 export class LitertSidebar extends LitElement {
   @property({ type: Object })
   state!: LlmChatStateController;
+
+  @query('custom-dropdown')
+  private readonly dropdown!: CustomDropdown;
 
   static override styles = [
     sharedStyles, css`
@@ -268,6 +272,20 @@ export class LitertSidebar extends LitElement {
     return `${sizeInGB.toFixed(2)} GB`;
   }
 
+  private isLargeModel(path: string): boolean {
+    return path.includes('gemma-4-26B') || path.includes('gemma-4-31B');
+  }
+
+  private readonly LARGE_MODEL_WARNING_KEY = 'litertlm-large-model-warning-dismissed';
+
+  private hasDismissedWarning(): boolean {
+    return window.localStorage.getItem(this.LARGE_MODEL_WARNING_KEY) === 'true';
+  }
+
+  private dismissWarning() {
+    window.localStorage.setItem(this.LARGE_MODEL_WARNING_KEY, 'true');
+  }
+
   private handleModelChange(e: CustomEvent<string>) {
     const path = e.detail;
     if (path === 'upload') {
@@ -278,14 +296,31 @@ export class LitertSidebar extends LitElement {
       void this.state.localDirService.mountDirectory();
       return;
     }
+
+    if (this.isLargeModel(path) && !this.hasDismissedWarning()) {
+      const proceed = confirm(
+          'Warning: The selected model requires a significant amount of video memory (VRAM).\n' +
+          'Running it may cause your browser tab to crash or your system to become unresponsive ' +
+          'if you do not have enough VRAM.\n\n' +
+          'Do you want to proceed?');
+      if (!proceed) {
+        if (this.dropdown) {
+          this.dropdown.value = this.state.settings.selectedModelPath;
+        }
+        return;
+      }
+      this.dismissWarning();
+    }
+
     if (this.state.settings.selectedModelPath !== path) {
       this.state.settings.selectedModelPath = path;
       this.state.settings.saveSettings();
 
       // Auto-trigger model loading compilation in background on settings change
-      this.state.modelLoader.loadModelWeights(async () => {
-        await this.state.chatSession.createConversationSession();
-      });
+      this.state.modelLoader.loadModelWeights(
+          this.state.settings.modelSettings, async () => {
+            await this.state.chatSession.createConversationSession();
+          });
     }
   }
 
@@ -297,10 +332,22 @@ export class LitertSidebar extends LitElement {
       const file = input.files?.[0];
       if (file) {
         try {
-          await this.state.modelLoader.importCustomModel(file);
-          await this.state.modelLoader.loadModelWeights(async () => {
-            await this.state.chatSession.createConversationSession();
-          });
+          const customModel =
+              await this.state.modelLoader.importCustomModel(file);
+          const exists = this.state.settings.customModels.some(
+              m => m.path === customModel.path);
+          if (!exists) {
+            this.state.settings.customModels = [
+              ...this.state.settings.customModels, customModel
+            ];
+          }
+          this.state.settings.selectedModelPath = customModel.path;
+          this.state.settings.saveSettings();
+
+          await this.state.modelLoader.loadModelWeights(
+              this.state.settings.modelSettings, async () => {
+                await this.state.chatSession.createConversationSession();
+              });
         } catch (e) {
           console.error('[LiteRT-LM] Failed to import/load custom model:', e);
         }
@@ -309,9 +356,25 @@ export class LitertSidebar extends LitElement {
     input.click();
   }
 
-  private handleRemoveCached(e: Event, modelPath: string) {
+  private async handleRemoveCached(e: Event, modelPath: string) {
     e.stopPropagation();  // Stop click propagation to prevent selecting model
-    this.state.modelLoader.deleteModelFromCache(modelPath);
+    const deleted =
+        await this.state.modelLoader.deleteModelFromCache(modelPath);
+    if (deleted) {
+      let settingsChanged = false;
+      if (modelPath.startsWith('https://local-model/')) {
+        this.state.settings.customModels =
+            this.state.settings.customModels.filter(m => m.path !== modelPath);
+        settingsChanged = true;
+      }
+      if (this.state.settings.selectedModelPath === modelPath) {
+        this.state.settings.selectedModelPath = MODELS[0]!.path;
+        settingsChanged = true;
+      }
+      if (settingsChanged) {
+        this.state.settings.saveSettings();
+      }
+    }
   }
 
   private handleSliderInput(e: Event, prop: keyof Settings) {
@@ -380,6 +443,9 @@ export class LitertSidebar extends LitElement {
                   <span class="model-name">${model.name}</span>
 
                   ${
+          isLocalDir ? html`
+                    <span class="local-badge" style="font-size: 0.6rem; color: var(--teal); opacity: 0.8;">Local Dir</span>
+                  ` :
           cachedSizeBytes ? html`
                     <span class="cached-info" style="display: flex; align-items: center; gap: 6px;">
                       <span class="size-badge" style="font-size: 0.62rem; background-color: var(--border); padding: 2px 6px; border-radius: 4px; color: var(--text-muted);">${
@@ -393,9 +459,6 @@ export class LitertSidebar extends LitElement {
                     <span class="downloading-info" style="font-size: 0.62rem; color: var(--teal); font-weight: bold;">
                       ${downloadProgress}%
                     </span>
-                  ` :
-              isLocalDir ? html`
-                    <span class="local-badge" style="font-size: 0.6rem; color: var(--teal); opacity: 0.8;">Local Dir</span>
                   ` :
                                                  html`
                     <span class="download-badge" style="font-size: 0.6rem; color: var(--text-muted); opacity: 0.65;">${model.path.startsWith('https://local-model/') ? 'Local' : `Download (${model.size})`}</span>

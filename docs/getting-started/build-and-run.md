@@ -90,8 +90,7 @@ fetch the latest prebuilt binaries.
 
 > Note: In order to run on GPU on all platforms, we need to take extra steps:
 >
-> 1.  Add `--define=litert_runtime_link_mode=dynamic`
->     `--define=resolve_symbols_in_exec=false` in the build command.
+> 1.  Add `--define=litert_runtime_link_mode=dynamic` in the build command.
 > 1.  `mkdir -p <test_dir>; cp <your litert_lm_main> <test_dir>; cp
 >     ./prebuilt/<your OS>/<shared libaries> <test_dir>/` and make sure the
 >     prebuilt .so/.dll/.dylib files are in the same directory as
@@ -363,6 +362,7 @@ Below are a few example commands (please update accordingly when using `adb`):
     --backend=cpu \
     --model_path=$MODEL_PATH \
     --benchmark \
+    --enable_profiling \
     --benchmark_prefill_tokens=1024 \
     --benchmark_decode_tokens=256 \
     --async=false
@@ -397,6 +397,8 @@ More detailed description about each of the flags are in the following table:
 :                                : execution.           : the world?"`        :
 | `benchmark`                    | Benchmark the LLM    | `false`             |
 :                                : execution.           :                     :
+| `enable_profiling`             | Enable per-op        | `false`             |
+:                                : profiling.           :                     :
 | `benchmark_prefill_tokens`     | If benchmark is true | `0`                 |
 :                                : and this value is >  :                     :
 :                                : 0, the benchmark     :                     :

@@ -14,7 +14,11 @@
 
 """LiteRT LM is a library for running GenAI models on devices."""
 
+# pylint: disable=g-importing-member
+
 from ._ffi import ActivationDataType
+from ._ffi import LiteRtLmConstraintProviderType
+from ._ffi import LiteRtLmModality
 from ._ffi import LogSeverity
 from ._ffi import set_min_log_severity
 from ._messages import Content
@@ -23,7 +27,13 @@ from ._messages import Message
 from ._messages import Role
 from ._messages import ToolCall
 from .benchmark import Benchmark
+from .capabilities import Capabilities
+from .capabilities import SupportedModalities
 from .conversation import Conversation
+from .embedding_engine import EmbeddingEngine
+from .embedding_engine import EmbeddingOptions
+from .embedding_engine import EmbeddingResponse
+from .embedding_engine import InputOverflowStrategy
 from .engine import Engine
 from .interfaces import AbstractBenchmark
 from .interfaces import AbstractConversation
@@ -31,11 +41,15 @@ from .interfaces import AbstractEngine
 from .interfaces import AbstractSession
 from .interfaces import Backend
 from .interfaces import BenchmarkInfo
+from .interfaces import ConstrainedDecodingConfig
 from .interfaces import LoraConfig
 from .interfaces import LoraRankConfig
+from .interfaces import NoRepeatNgramConfig
 from .interfaces import RepetitionPenaltyConfig
+from .interfaces import ResponseFormat
 from .interfaces import Responses
 from .interfaces import SamplerConfig
+from .interfaces import SuppressTokensConfig
 from .interfaces import ThinkingConfig
 from .interfaces import Tool
 from .interfaces import ToolEventHandler
@@ -51,19 +65,31 @@ __all__ = (
     "Backend",
     "Benchmark",
     "BenchmarkInfo",
+    "Capabilities",
+    "ConstrainedDecodingConfig",
     "Content",
     "Contents",
     "Conversation",
+    "EmbeddingEngine",
+    "EmbeddingOptions",
+    "EmbeddingResponse",
     "Engine",
+    "InputOverflowStrategy",
+    "LiteRtLmConstraintProviderType",
+    "LiteRtLmModality",
     "LogSeverity",
     "LoraConfig",
     "LoraRankConfig",
     "Message",
+    "NoRepeatNgramConfig",
     "RepetitionPenaltyConfig",
+    "ResponseFormat",
     "Responses",
     "Role",
     "SamplerConfig",
     "Session",
+    "SupportedModalities",
+    "SuppressTokensConfig",
     "ThinkingConfig",
     "Tool",
     "ToolCall",

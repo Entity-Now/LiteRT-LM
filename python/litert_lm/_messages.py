@@ -52,6 +52,18 @@ class ToolCall:
 class Content(abc.ABC):
   """Represents a content in the Message of the conversation."""
 
+  # pylint: disable=invalid-name
+  # These sub-classes are added here to improve the type checking (pyrefly).
+  # The names are chosen before adding the attributes and also consistent with
+  # other langugage bindings.
+  Text: type[Text]
+  ImageBytes: type[ImageBytes]
+  ImageFile: type[ImageFile]
+  AudioBytes: type[AudioBytes]
+  AudioFile: type[AudioFile]
+  ToolResponse: type[ToolResponse]
+  # pylint: enable=invalid-name
+
   @abc.abstractmethod
   def to_json(self) -> dict[str, Any]:
     raise NotImplementedError
@@ -202,11 +214,11 @@ class Message:
   def to_json(self) -> dict[str, Any]:
     res = {"role": self.role.value}
     if self.contents.contents:
-      res["content"] = self.contents.to_json()
+      res["content"] = self.contents.to_json()  # pyrefly: ignore[bad-assignment]
     if self.tool_calls:
-      res["tool_calls"] = [tc.to_json() for tc in self.tool_calls]
+      res["tool_calls"] = [tc.to_json() for tc in self.tool_calls]  # pyrefly: ignore[bad-assignment]
     if self.channels:
-      res["channels"] = self.channels
+      res["channels"] = self.channels  # pyrefly: ignore[bad-assignment]
     return res
 
   def __str__(self) -> str:

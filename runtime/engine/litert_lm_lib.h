@@ -26,17 +26,15 @@
 #include <vector>
 
 #include "absl/base/log_severity.h"  // from @com_google_absl
-#include "absl/container/flat_hash_set.h"  // from @com_google_absl
 #include "absl/log/log_entry.h"  // from @com_google_absl
 #include "absl/log/log_sink.h"  // from @com_google_absl
 #include "absl/status/status.h"  // from @com_google_absl
 #include "absl/status/statusor.h"  // from @com_google_absl
-#include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/synchronization/mutex.h"  // from @com_google_absl
 #include "nlohmann/json.hpp"  // from @nlohmann_json
-#include "runtime/components/logits_processor/no_repeat_ngram_config.h"
-#include "runtime/components/logits_processor/repetition_penalty_config.h"
-#include "runtime/components/logits_processor/suppress_tokens_config.h"
+#include "runtime/components/constrained_decoding/no_repeat_ngram_config.h"
+#include "runtime/components/constrained_decoding/repetition_penalty_config.h"
+#include "runtime/components/constrained_decoding/suppress_tokens_config.h"
 #include "runtime/engine/engine.h"
 #include "runtime/engine/engine_settings.h"
 #include "runtime/engine/io_types.h"
@@ -83,6 +81,9 @@ struct LiteRtLmSettings {
   std::optional<std::string> expected_output = std::nullopt;
   std::optional<std::string> log_sink_file = std::nullopt;
   int max_num_tokens = 0;
+  // The maximum number of tokens to generate. For thinking models, both
+  // thinking (reasoning) tokens and the final response tokens count towards
+  // this limit.
   int max_output_tokens = -1;
   int max_num_images = 0;
   int visual_token_budget = -1;
@@ -90,6 +91,7 @@ struct LiteRtLmSettings {
   std::set<int> prefill_batch_sizes;
   int num_output_candidates = 1;
   bool benchmark = false;
+  bool enable_profiling = false;
   int benchmark_prefill_tokens = 0;
   int benchmark_decode_tokens = 0;
   bool async = true;
@@ -97,6 +99,8 @@ struct LiteRtLmSettings {
   bool force_f32 = false;
   bool multi_turns = false;
   int num_cpu_threads = 0;
+  // Delegate supported CPU operations to YNNPACK before XNNPACK.
+  bool enable_ynnpack = false;
   // Set external tensor mode false by default since it runs slightly faster
   // during decode as the layout changes optimized for GPU inference is done by
   // GPU, not by CPU.
@@ -107,6 +111,7 @@ struct LiteRtLmSettings {
   int num_logits_to_print_after_decode = 0;
   std::optional<std::string> score_target_text = std::nullopt;
   bool gpu_madvise_original_shared_tensors = true;
+  bool gpu_enable_metal_residency_set = false;
   bool disable_cache = false;
   bool disable_weight_cache = false;
   bool disable_gpu_program_cache = false;
@@ -139,6 +144,7 @@ struct LiteRtLmSettings {
   bool use_hw_cache_update_for_npu = true;
   bool use_hw_ple_for_npu = true;
   bool enable_npu_debug_logging = false;
+  bool disable_input_prompt_as_hint = false;
 };
 
 struct LitertLmMetrics {

@@ -31,6 +31,15 @@ pytype_strict_library(
 )
 
 pytype_strict_library(
+    name = "capabilities",
+    srcs = ["capabilities.py"],
+    deps = [
+        ":_ffi",
+        ":interfaces",
+    ],
+)
+
+pytype_strict_library(
     name = "_messages",
     srcs = ["_messages.py"],
 )
@@ -90,6 +99,16 @@ pytype_strict_library(
 )
 
 pytype_strict_library(
+    name = "embedding_engine",
+    srcs = ["embedding_engine.py"],
+    deps = [
+        ":_ffi",
+        ":_messages",
+        ":interfaces",
+    ],
+)
+
+pytype_strict_library(
     name = "benchmark",
     srcs = ["benchmark.py"],
     deps = [
@@ -116,7 +135,9 @@ pytype_strict_library(
         ":_ffi",
         ":_messages",
         ":benchmark",
+        ":capabilities",
         ":conversation",
+        ":embedding_engine",
         ":engine",
         ":interfaces",
         ":session",
@@ -127,6 +148,46 @@ pytype_strict_library(
 py_test(
     name = "engine_test",
     srcs = ["engine_test.py"],
+    data = ["//runtime/testdata"],
+    tags = ["nowindows"],
+    deps = [
+        ":litert_lm",
+        "@absl_py//absl/flags",
+        "@absl_py//absl/testing:absltest",
+        "@absl_py//absl/testing:parameterized",
+    ],
+    imports = [".."],
+)
+
+py_test(
+    name = "capabilities_test",
+    srcs = ["capabilities_test.py"],
+    data = ["//runtime/testdata"],
+    tags = ["nowindows"],
+    deps = [
+        ":litert_lm",
+        "@absl_py//absl/flags",
+        "@absl_py//absl/testing:absltest",
+    ],
+    imports = [".."],
+)
+
+py_test(
+    name = "debug_artifacts_test",
+    srcs = ["debug_artifacts_test.py"],
+    tags = ["nowindows"],
+    deps = [
+        ":interfaces",
+        ":litert_lm",
+        ":session",
+        "@absl_py//absl/testing:absltest",
+    ],
+    imports = [".."],
+)
+
+py_test(
+    name = "embedding_engine_test",
+    srcs = ["embedding_engine_test.py"],
     data = ["//runtime/testdata"],
     tags = ["nowindows"],
     deps = [

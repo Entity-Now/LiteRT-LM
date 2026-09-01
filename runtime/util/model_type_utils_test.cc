@@ -21,11 +21,12 @@
 #include <gtest/gtest.h>
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
-#include "support/tokenizer/tokenizer.h"  // from @litert
+#include "absl/types/span.h"  // from @com_google_absl
 #include "runtime/components/prompt_template.h"
 #include "runtime/proto/llm_metadata.pb.h"
 #include "runtime/proto/llm_model_type.pb.h"
 #include "runtime/util/test_utils.h"  // NOLINT
+#include "support/tokenizer/tokenizer.h"
 
 namespace litert::lm {
 namespace {
@@ -37,7 +38,8 @@ using TokenizerType = ::litert::support::TokenizerType;
 class MockTokenizer : public Tokenizer {
  public:
   MOCK_METHOD(absl::StatusOr<std::string>, TokenIdsToText,
-              (const std::vector<int>& token_ids), (override));
+              (absl::Span<const int> token_id, bool skip_special_tokens),
+              (override));
   MOCK_METHOD(absl::StatusOr<std::vector<int>>, TextToTokenIds,
               (absl::string_view text), (override));
   MOCK_METHOD(absl::StatusOr<int>, TokenToId, (absl::string_view token),
@@ -182,6 +184,41 @@ TEST(ModelTypeUtilsTest, GetDefaultJinjaPromptTemplateWithImageAndAudio) {
             "is a user audio <start_of_audio><end_of_turn>\n"
             "<start_of_turn>model\nThis is a model message<end_of_turn>\n"
             "<start_of_turn>model\n");
+}
+
+TEST(ModelTypeUtilsTest, GetModelTypeName) {
+  proto::LlmModelType model_type;
+  EXPECT_EQ(GetModelTypeName(model_type), "Not set");
+
+  model_type.mutable_generic_model();
+  EXPECT_EQ(GetModelTypeName(model_type), "generic_model");
+
+  model_type.mutable_gemma3n();
+  EXPECT_EQ(GetModelTypeName(model_type), "gemma3n");
+
+  model_type.mutable_function_gemma();
+  EXPECT_EQ(GetModelTypeName(model_type), "function_gemma");
+
+  model_type.mutable_gemma3();
+  EXPECT_EQ(GetModelTypeName(model_type), "gemma3");
+
+  model_type.mutable_qwen3();
+  EXPECT_EQ(GetModelTypeName(model_type), "qwen3");
+
+  model_type.mutable_qwen2p5();
+  EXPECT_EQ(GetModelTypeName(model_type), "qwen2p5");
+
+  model_type.mutable_gemma4();
+  EXPECT_EQ(GetModelTypeName(model_type), "gemma4");
+
+  model_type.mutable_fast_vlm();
+  EXPECT_EQ(GetModelTypeName(model_type), "fast_vlm");
+
+  model_type.mutable_lfm2();
+  EXPECT_EQ(GetModelTypeName(model_type), "lfm2");
+
+  model_type.mutable_minicpm5();
+  EXPECT_EQ(GetModelTypeName(model_type), "minicpm5");
 }
 
 }  // namespace

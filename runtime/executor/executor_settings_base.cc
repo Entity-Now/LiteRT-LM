@@ -336,11 +336,11 @@ ExecutorSettingsBase::GetWeightCacheFile(absl::string_view suffix,
 
   std::string cache_path;
   if (GetCacheDir().empty()) {
-    cache_path = absl::StrCat(model_path, suffix, metadata_id);
+    cache_path = absl::StrCat(model_path, metadata_id, suffix);
   } else {
     ABSL_ASSIGN_OR_RETURN(
         cache_path, JoinPath(GetCacheDir(), absl::StrCat(Basename(model_path),
-                                                         suffix, metadata_id)));
+                                                         metadata_id, suffix)));
   }
 
   // Try to delete stale caches if the current cache file doesn't exist.
@@ -355,8 +355,7 @@ ExecutorSettingsBase::GetWeightCacheFile(absl::string_view suffix,
         ABSL_LOG(WARNING) << "Failed to clean stale caches: "
                           << num_deleted_or.status();
       } else {
-        ABSL_LOG(INFO) << "Deleted " << *num_deleted_or
-                       << " stale cache files.";
+        ABSL_VLOG(1) << "Deleted " << *num_deleted_or << " stale cache files.";
       }
     }
   }
@@ -406,8 +405,8 @@ ExecutorSettingsBase::GetProgramCacheFile(absl::string_view suffix,
   // Try to delete stale caches if the current cache file doesn't exist.
   if (check_and_clean) {
     if (!FileExists(cache_path)) {
-      ABSL_LOG(INFO) << "File does not exist: " << cache_path
-                     << " Cleaning stale caches.";
+      ABSL_VLOG(1) << "File does not exist: " << cache_path
+                   << " Cleaning stale caches.";
       std::string dir_to_clean = GetCacheDir().empty()
                                      ? std::string(Dirname(model_path))
                                      : GetCacheDir();
@@ -417,8 +416,7 @@ ExecutorSettingsBase::GetProgramCacheFile(absl::string_view suffix,
         ABSL_LOG(WARNING) << "Failed to clean stale caches: "
                           << num_deleted_or.status();
       } else {
-        ABSL_LOG(INFO) << "Deleted " << *num_deleted_or
-                       << " stale cache files.";
+        ABSL_VLOG(1) << "Deleted " << *num_deleted_or << " stale cache files.";
       }
     }
   }

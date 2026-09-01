@@ -39,14 +39,15 @@
 #include "absl/time/clock.h"  // from @com_google_absl
 #include "absl/time/time.h"  // from @com_google_absl
 #include "nlohmann/json.hpp"  // from @nlohmann_json
-#include "runtime/components/logits_processor/constrained_decoding/bitmap.h"
-#include "runtime/components/logits_processor/constrained_decoding/constraint.h"
-#include "runtime/components/logits_processor/constrained_decoding/external_constraint_config.h"
-#include "runtime/components/logits_processor/no_repeat_ngram_config.h"
-#include "runtime/components/logits_processor/repetition_penalty_config.h"
-#include "runtime/components/logits_processor/suppress_tokens_config.h"
+#include "runtime/components/constrained_decoding/bitmap.h"
+#include "runtime/components/constrained_decoding/constraint.h"
+#include "runtime/components/constrained_decoding/external_constraint_config.h"
+#include "runtime/components/constrained_decoding/no_repeat_ngram_config.h"
+#include "runtime/components/constrained_decoding/repetition_penalty_config.h"
+#include "runtime/components/constrained_decoding/suppress_tokens_config.h"
 #include "runtime/components/prompt_template.h"
 #include "runtime/conversation/io_types.h"
+#include "runtime/conversation/model_data_processor/gemma4_data_processor_config.h"
 #include "runtime/conversation/thinking_config.h"
 #include "runtime/engine/engine.h"
 #include "runtime/engine/engine_factory.h"
@@ -85,7 +86,7 @@ constexpr char kGemma4TemplatePath[] =
     "litert_lm/runtime/components/testdata/google-gemma-4-multi-prefill.jinja";
 
 constexpr char kTestImageFilePath[] =
-    "litert/support/preprocessor/testdata/apple.png";
+    "litert_lm/support/preprocessor/testdata/apple.png";
 
 constexpr absl::string_view kTestJinjaPromptTemplate = R"jinja(
 {%- for message in messages -%}
@@ -467,7 +468,10 @@ TEST_P(ConversationTest, SendMessage) {
   Message expected_message = {
       {"role", "assistant"},
       {"content",
-       {{{"type", "text"}, {"text", "TarefaByte دارایेत्र investigaciónప్రదేశ"}}}}};
+       {{{"type", "text"},
+         {"text",
+          " spectrophot "
+          "spectrophot<unused178><unused178><unused178><unused178>"}}}}};
   EXPECT_EQ(message, expected_message);
   EXPECT_THAT(conversation->GetHistory(),
               testing::ElementsAre(user_message, expected_message));
@@ -1010,7 +1014,8 @@ TEST_P(ConversationTest,
     ],
     "channels": {
       "thought": ""
-    }
+    },
+    "reasoning_content": ""
   })");
   EXPECT_EQ(response, assistant_message);
 }
@@ -1556,7 +1561,8 @@ TEST_P(ConversationTest, SendSingleMessageWithChannel) {
     ],
     "channels": {
       "thought": "hmm"
-    }
+    },
+    "reasoning_content": "hmm"
   })");
   EXPECT_THAT(response, testing::Eq(assistant_message));
   EXPECT_THAT(conversation->GetHistory(),
@@ -1725,7 +1731,8 @@ TEST_P(ConversationTest, SendSingleMessageWithChannelQwenThink) {
     ],
     "channels": {
       "thought": "hmm"
-    }
+    },
+    "reasoning_content": "hmm"
   })");
   EXPECT_THAT(response, testing::Eq(assistant_message));
   EXPECT_THAT(conversation->GetHistory(),
@@ -2035,11 +2042,13 @@ TEST_P(ConversationTest, SendMessageAsync) {
   Message user_message = {{"role", "user"}, {"content", "Hello world!"}};
   // The expected message is just some gibberish text, because the test LLM has
   // random weights.
-  Message expected_message =
-      Message({{"role", "assistant"},
-               {"content",
-                {{{"type", "text"},
-                  {"text", "TarefaByte دارایेत्र investigaciónప్రదేశ"}}}}});
+  Message expected_message = Message(
+      {{"role", "assistant"},
+       {"content",
+        {{{"type", "text"},
+          {"text",
+           " spectrophot "
+           "spectrophot<unused178><unused178><unused178><unused178>"}}}}});
   Message expected_message_for_confirm = expected_message;
 
   absl::Notification done;
@@ -2165,7 +2174,9 @@ TEST_P(ConversationTest, SendMessageAsyncWithChannelContent) {
   std::vector<Message> expected_messages = {
       Message{{"role", "assistant"},
               {"content", {{{"type", "text"}, {"text", "Hello "}}}}},
-      Message{{"role", "assistant"}, {"channels", {{"thought", "hmm"}}}},
+      Message{{"role", "assistant"},
+              {"channels", {{"thought", "hmm"}}},
+              {"reasoning_content", "hmm"}},
       Message{{"role", "assistant"},
               {"content", {{{"type", "text"}, {"text", " World!"}}}}},
   };
@@ -2186,7 +2197,8 @@ TEST_P(ConversationTest, SendMessageAsyncWithChannelContent) {
     ],
     "channels": {
       "thought": "hmm"
-    }
+    },
+    "reasoning_content": "hmm"
   })");
 
   EXPECT_THAT(conversation->GetHistory(),
@@ -2650,19 +2662,12 @@ TEST_P(ConversationTest, SendMessageWithPreface) {
                            {"role", "user"}, {"content", "Hello world!"}}));
   // The expected message is just some gibberish text, because the test LLM has
   // random weights.
-  Message expected_message;
-  if (prefill_preface_on_init_) {
-    expected_message = {{"role", "assistant"},
-                        {"content",
-                         {{{"type", "text"},
-                           {"text", " rupani rupani rupani echoes echoes"}}}}};
-  } else {
-    expected_message = {
-        {"role", "assistant"},
-        {"content",
-         {{{"type", "text"},
-           {"text", " noses</caption> গ্রাহ<unused5296> omp"}}}}};
-  }
+  Message expected_message = {
+      {"role", "assistant"},
+      {"content",
+       {{{"type", "text"},
+         {"text",
+          "debugElementdebugElementdebugElementdebugElementdebugElement"}}}}};
   EXPECT_EQ(message, expected_message);
 }
 
@@ -2924,11 +2929,13 @@ TEST(ConversationAccessHistoryTest, AccessHistory) {
 
   // Send a message to the LLM.
   Message user_message = {{"role", "user"}, {"content", "Hello world!"}};
-  Message expected_assistant_message =
-      Message({{"role", "assistant"},
-               {"content",
-                {{{"type", "text"},
-                  {"text", "TarefaByte دارایेत्र investigaciónప్రదేశ"}}}}});
+  Message expected_assistant_message = Message(
+      {{"role", "assistant"},
+       {"content",
+        {{{"type", "text"},
+          {"text",
+           " spectrophot "
+           "spectrophot<unused178><unused178><unused178><unused178>"}}}}});
   Message expected_assistant_message_for_confirm = expected_assistant_message;
   absl::Notification done;
   EXPECT_OK(conversation->SendMessageAsync(
@@ -3445,6 +3452,86 @@ TEST_P(ConversationTest, SendMessageWithThinkingTokenBudget) {
                                         std::make_optional(100)),
                       testing::Property(&DecodeConfig::GetThinkingStartTokenIds,
                                         testing::Eq(expected_start_token_ids)),
+                      testing::Property(&DecodeConfig::GetThinkingEndTokenIds,
+                                        testing::Eq(expected_end_token_ids)))))
+      .WillOnce(
+          [](absl::AnyInvocable<void(absl::StatusOr<Responses>)> user_callback,
+             const DecodeConfig& decode_config) {
+            user_callback(Responses(TaskState::kProcessing, {"I am good."}));
+            user_callback(Responses(TaskState::kDone));
+            return nullptr;
+          });
+
+  ASSERT_OK_AND_ASSIGN(
+      const Message response,
+      conversation->SendMessage(
+          user_message, {.thinking_config = ThinkingConfig(true, 100)}));
+}
+
+TEST_P(ConversationTest,
+       SendMessageWithReasoningContentChannelAndThinkingBudget) {
+  // Set up mock Session.
+  auto mock_session = std::make_unique<MockSession>();
+  MockSession* mock_session_ptr = mock_session.get();
+  SessionConfig session_config = SessionConfig::CreateDefault();
+  session_config.SetStartTokenId(0);
+  session_config.GetMutableStopTokenIds().push_back({1});
+  *session_config.GetMutableLlmModelType().mutable_gemma3() = {};
+  EXPECT_CALL(*mock_session_ptr, GetSessionConfig())
+      .WillRepeatedly(testing::ReturnRef(session_config));
+
+  // Set up mock Engine.
+  auto mock_engine = std::make_unique<MockEngine>();
+  EXPECT_CALL(*mock_engine, CreateSession(testing::_))
+      .WillOnce(testing::Return(std::move(mock_session)));
+  EXPECT_CALL(*mock_engine, GetTokenizer())
+      .WillRepeatedly(testing::ReturnRef(*tokenizer_));
+  ASSERT_OK_AND_ASSIGN(auto model_assets,
+                       ModelAssets::Create(GetTestdataPath(kTestLlmPath)));
+  ASSERT_OK_AND_ASSIGN(auto engine_settings, EngineSettings::CreateDefault(
+                                                 model_assets, Backend::CPU));
+  EXPECT_CALL(*mock_engine, GetEngineSettings())
+      .WillRepeatedly(testing::ReturnRef(engine_settings));
+
+  // Create Conversation with a configured "reasoning_content" channel.
+  std::vector<Channel> channels = {{.channel_name = "reasoning_content",
+                                    .start = "<think>\n",
+                                    .end = "\n</think>"}};
+  ASSERT_OK_AND_ASSIGN(
+      auto conversation_config,
+      ConversationConfig::Builder()
+          .SetSessionConfig(session_config)
+          .SetOverwritePromptTemplate(PromptTemplate(
+              absl::StrCat(kTestJinjaPromptTemplate, "<think>\n")))
+          .SetChannels(channels)
+          .Build(*mock_engine));
+  EXPECT_CALL(*mock_session_ptr, RunPrefillAsync(testing::_, testing::_))
+      .WillRepeatedly([](const std::vector<InputData>& contents,
+                         absl::AnyInvocable<void(absl::StatusOr<Responses>)>
+                             user_callback) {
+        user_callback(Responses(TaskState::kDone));
+        return nullptr;
+      });
+
+  ASSERT_OK_AND_ASSIGN(auto conversation,
+                       Conversation::Create(*mock_engine, conversation_config));
+
+  Message user_message = {{"role", "user"}, {"content", "How are you?"}};
+
+  // Verify that for reasoning_content channel, start_token_ids is empty (`{}`)
+  // because the start token is prefilled by the prompt template, while
+  // end_token_ids is populated.
+  ASSERT_OK_AND_ASSIGN(std::vector<int> expected_end_token_ids,
+                       tokenizer_->TextToTokenIds("\n</think>"));
+
+  EXPECT_CALL(*mock_session_ptr,
+              RunDecodeAsync(
+                  testing::_,
+                  testing::AllOf(
+                      testing::Property(&DecodeConfig::GetThinkingTokenBudget,
+                                        std::make_optional(100)),
+                      testing::Property(&DecodeConfig::GetThinkingStartTokenIds,
+                                        testing::Eq(std::vector<int>{})),
                       testing::Property(&DecodeConfig::GetThinkingEndTokenIds,
                                         testing::Eq(expected_end_token_ids)))))
       .WillOnce(
@@ -4479,6 +4566,35 @@ TEST(AppendMessageTest, Gemma4SyncPrefillPrefaceOnInitAndAlternateRoles) {
         ]
       })json"),
                                       {.has_pending_message = false}));
+}
+
+TEST_P(ConversationTest,
+       SendMessageVisualTokenBudgetExceedingEngineSettingFails) {
+  ASSERT_OK(engine_settings_);
+  engine_settings_->SetMaxVisionTokensPerImage(200);
+  auto mock_session = CreateMockSession();
+  auto mock_engine = CreateMockEngine(std::move(mock_session));
+
+  ASSERT_OK_AND_ASSIGN(
+      auto conversation_config,
+      ConversationConfig::Builder()
+          .SetSessionConfig(session_config_)
+          .SetOverwritePromptTemplate(PromptTemplate("{{ prompt }}"))
+          .Build(*mock_engine));
+  ASSERT_OK_AND_ASSIGN(auto conversation,
+                       Conversation::Create(*mock_engine, conversation_config));
+
+  Message user_message = {{"role", "user"}, {"content", "Hello"}};
+  OptionalArgs optional_args;
+  optional_args.args = Gemma4DataProcessorArguments{.visual_token_budget = 300};
+
+  EXPECT_THAT(
+      conversation->SendMessage(user_message, std::move(optional_args)),
+      testing::status::StatusIs(
+          absl::StatusCode::kInvalidArgument,
+          testing::HasSubstr(
+              "Visual token budget (300) cannot be larger than the engine's "
+              "max vision tokens per image (200).")));
 }
 
 }  // namespace

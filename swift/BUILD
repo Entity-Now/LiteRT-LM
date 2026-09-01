@@ -30,20 +30,23 @@ swift_library(
         "Capabilities.swift",
         "Config.swift",
         "Conversation.swift",
+        "EmbeddingEngine.swift",
+        "EmbeddingEngineConfig.swift",
         "Engine.swift",
         "ExperimentalFlags.swift",
         "LiteRTLMError.swift",
         "Message.swift",
+        "ResponseFormat.swift",
         "Tool.swift",
         "ToolManager.swift",
     ],
     copts = ["-enable-testing"],
+    features = ["-swift.enable_v6"],
     module_name = "LiteRTLM",
     deps = [
 
 
         "//c:engine",
-        "//schema/capabilities:capabilities_c",
     ],
 )
 
@@ -54,6 +57,7 @@ swift_library(
     srcs = ["EngineTests.swift"],
     copts = ["-enable-testing"],
     data = ["//runtime/testdata"],
+    features = ["-swift.enable_v6"],
     deps = [
         ":LiteRT_LM_Swift",
 
@@ -67,6 +71,7 @@ swift_library(
     srcs = ["ConversationTests.swift"],
     copts = ["-enable-testing"],
     data = ["//runtime/testdata"],
+    features = ["-swift.enable_v6"],
     deps = [
         ":LiteRT_LM_Swift",
 
@@ -106,13 +111,14 @@ swift_interop_hint(
 cc_library(
     name = "CLiteRTLM_objc",
     hdrs = [
+        "//c:capabilities.h",
+        "//c:conversation.h",
+        "//c:embedding_engine.h",
         "//c:engine.h",
-        "//schema/capabilities:capabilities_c.h",
     ],
     aspect_hints = [":CLiteRTLM_swift_hint"],
     deps = [
         "//c:engine",
-        "//schema/capabilities:capabilities_c",
     ],
 )
 
@@ -134,7 +140,9 @@ apple_xcframework(
     },
     public_hdrs = [
         "//c:engine.h",
-        "//schema/capabilities:capabilities_c.h",
+        "//c:conversation.h",
+        "//c:embedding_engine.h",
+        "//c:capabilities.h",
     ],
     deps = [
         ":CLiteRTLM_objc",
@@ -169,7 +177,9 @@ genrule(
     srcs = [
         ":CLiteRTLM_universal",
         "//c:engine.h",
-        "//schema/capabilities:capabilities_c.h",
+        "//c:conversation.h",
+        "//c:embedding_engine.h",
+        "//c:capabilities.h",
     ],
     outs = ["CLiteRTLM_mac.zip"],
     cmd = """
@@ -178,18 +188,22 @@ genrule(
        cp $(location :CLiteRTLM_universal) CLiteRTLM_mac/libCLiteRTLM_mac.dylib
        # Copy the headers
        cp $(location //c:engine.h) CLiteRTLM_mac/Headers/
-       cp $(location //schema/capabilities:capabilities_c.h) CLiteRTLM_mac/Headers/
+       cp $(location //c:conversation.h) CLiteRTLM_mac/Headers/
+       cp $(location //c:embedding_engine.h) CLiteRTLM_mac/Headers/
+       cp $(location //c:capabilities.h) CLiteRTLM_mac/Headers/
        # Create module map
        cat << 'EOF' > CLiteRTLM_mac/Headers/module.modulemap
 module CLiteRTLM {
    header "engine.h"
-   header "capabilities_c.h"
+   header "conversation.h"
+   header "embedding_engine.h"
+   header "capabilities.h"
    export *
 }
 EOF
        # Zip it all up
        zip -r $@ CLiteRTLM_mac
-   """,
+    """,
     visibility = ["//visibility:public"],
 )
 
@@ -260,5 +274,29 @@ ios_unit_test(
     # The ios_unit_test depends on the swift_library containing the test code.
     deps = [
         ":LiteRT_LM_CapabilitiesTestsLib",
+    ],
+)
+
+# Swift library containing test sources for EmbeddingEngine.
+swift_library(
+    name = "LiteRT_LM_EmbeddingEngineTestsLib",
+    testonly = True,
+    srcs = ["EmbeddingEngineTests.swift"],
+    data = ["//runtime/testdata"],
+    deps = [
+        ":LiteRT_LM_Swift",
+
+    ],
+)
+
+ios_unit_test(
+    name = "LiteRT_LM_EmbeddingEngine_Tests",
+    data = [
+        "//runtime/testdata",
+    ],
+    minimum_os_version = "15.0",
+    # The ios_unit_test depends on the swift_library containing the test code.
+    deps = [
+        ":LiteRT_LM_EmbeddingEngineTestsLib",
     ],
 )

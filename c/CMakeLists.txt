@@ -12,11 +12,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set(PKG_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
+# ==============================================================================
+# Conversation
+# ==============================================================================
+add_litertlm_library(c_conversation STATIC
+  conversation.cc
+)
+add_library(LiteRTLM::C::Conversation ALIAS c_conversation)
+
+target_include_directories(c_conversation
+  PRIVATE
+    ${LITERTLM_INCLUDE_PATHS}
+)
+
+target_link_libraries(c_conversation
+  PUBLIC
+    LITERTLM_DEPS
+    LiteRTLM::Runtime::Conversation
+    LiteRTLM::Runtime::Core
+    LiteRTLM::Runtime::Components
+    LiteRTLM::Runtime::Engine
+    LiteRTLM::Runtime::Executor
+    LiteRTLM::Support::Tokenizer
+)
 
 # ==============================================================================
-# 1. Engine Library
-#    Bazel: cc_library(name = "engine", ...)
+# Engine
 # ==============================================================================
 add_litertlm_library(c_engine STATIC
   engine.cc
@@ -25,30 +46,72 @@ add_library(LiteRTLM::C::Engine ALIAS c_engine)
 
 target_include_directories(c_engine
   PRIVATE
-    ${LITERTLM_INCLUDE_PATHS}        # Project Root & Generated Headers
-    ${LITERT_INCLUDE_PATHS}          # LiteRT External Headers
-    ${THIRD_PARTY_DIR}/json/include # @nlohmann_json//:json
+    ${LITERTLM_INCLUDE_PATHS}
 )
 
 target_link_libraries(c_engine
   PUBLIC
     LITERTLM_DEPS
-
+    LiteRTLM::C::EmbeddingEngine
+    LiteRTLM::C::Conversation
     LiteRTLM::Runtime::Conversation
-    LiteRTLM::Runtime::Conversation::IoTypes
-    LiteRTLM::Runtime::Core::EngineImpl
-    LiteRTLM::Runtime::Engine::Interface
-    LiteRTLM::Runtime::Engine::Settings
-    LiteRTLM::Runtime::Engine::IoTypes
-    LiteRTLM::Runtime::Executor::ExecutorSettingsBase
+    LiteRTLM::Runtime::Core
+    LiteRTLM::Runtime::Components
+    LiteRTLM::Runtime::Engine
+    LiteRTLM::Runtime::Executor
+    LiteRTLM::Support::Tokenizer
 )
 
 # ==============================================================================
-# 2. Folder Facade
+# Embedding Engine
+# ==============================================================================
+add_litertlm_library(c_embedding_engine STATIC
+  embedding_engine.cc
+)
+add_library(LiteRTLM::C::EmbeddingEngine ALIAS c_embedding_engine)
+
+target_include_directories(c_embedding_engine
+  PRIVATE
+    ${LITERTLM_INCLUDE_PATHS}
+)
+
+target_link_libraries(c_embedding_engine
+  PUBLIC
+    LITERTLM_DEPS
+    LiteRTLM::C::Conversation
+    LiteRTLM::Runtime::Components
+    LiteRTLM::Runtime::Engine
+    LiteRTLM::Runtime::Executor
+)
+
+# ==============================================================================
+# Capabilities
+# ==============================================================================
+add_litertlm_library(c_capabilities STATIC
+  capabilities.cc
+)
+add_library(LiteRTLM::C::Capabilities ALIAS c_capabilities)
+
+target_include_directories(c_capabilities
+  PRIVATE
+    ${LITERTLM_INCLUDE_PATHS}
+)
+
+target_link_libraries(c_capabilities
+  PUBLIC
+    LITERTLM_DEPS
+    LiteRTLM::Schema::Capabilities
+)
+
+# ==============================================================================
+# Folder Facade
 # ==============================================================================
 add_library(c_libs INTERFACE)
 add_library(LiteRTLM::C ALIAS c_libs)
 
 target_link_libraries(c_libs INTERFACE
+  LiteRTLM::C::Capabilities
+  LiteRTLM::C::Conversation
   LiteRTLM::C::Engine
+  LiteRTLM::C::EmbeddingEngine
 )

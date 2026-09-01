@@ -28,11 +28,11 @@
 #include "absl/strings/str_cat.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "nlohmann/json.hpp"  // from @nlohmann_json
-#include "support/preprocessor/image_preprocessor.h"  // from @litert
 #include "runtime/conversation/model_data_processor/data_utils.h"
 #include "runtime/engine/io_types.h"
 #include "runtime/util/memory_mapped_file.h"
 #include "runtime/util/status_macros.h"
+#include "support/preprocessor/image_preprocessor.h"
 #include "re2/re2.h"  // from @com_googlesource_code_re2
 
 namespace litert::lm {
@@ -96,17 +96,19 @@ absl::StatusOr<std::vector<InputData>> ProcessMultimodalPrompt(
           return absl::InvalidArgumentError(
               "Visual token budget must be positive.");
         }
-        max_num_patches = std::min(
-            max_num_patches,
+        // Overwrite the max_num_patches if the visual token budget is provided.
+        max_num_patches =
             budget * image_params->GetPatchifyConfig()->pooling_kernel_size *
-                image_params->GetPatchifyConfig()->pooling_kernel_size);
+            image_params->GetPatchifyConfig()->pooling_kernel_size;
       }
       img_params.SetPatchifyConfig(ImagePreprocessParameter::PatchifyConfig{
           .patch_width = image_params->GetPatchifyConfig()->patch_width,
           .patch_height = image_params->GetPatchifyConfig()->patch_height,
           .max_num_patches = max_num_patches,
           .pooling_kernel_size =
-              image_params->GetPatchifyConfig()->pooling_kernel_size});
+              image_params->GetPatchifyConfig()->pooling_kernel_size,
+          .emit_positions = image_params->GetPatchifyConfig()->emit_positions,
+          .merge_patches = image_params->GetPatchifyConfig()->merge_patches});
     }
   }
 

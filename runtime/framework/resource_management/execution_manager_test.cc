@@ -31,17 +31,17 @@
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/synchronization/mutex.h"  // from @com_google_absl
 #include "absl/time/time.h"  // from @com_google_absl
+#include "absl/types/span.h"  // from @com_google_absl
 #include "litert/cc/litert_tensor_buffer.h"  // from @litert
-#include "support/tokenizer/tokenizer.h"  // from @litert
-#include "runtime/components/logits_processor/constrained_decoding/fake_constraint.h"
-#include "runtime/components/logits_processor/no_repeat_ngram_config.h"
-#include "runtime/components/logits_processor/repetition_penalty_config.h"
-#include "runtime/components/logits_processor/suppress_tokens_config.h"
+#include "runtime/components/constrained_decoding/fake_constraint.h"
+#include "runtime/components/constrained_decoding/no_repeat_ngram_config.h"
+#include "runtime/components/constrained_decoding/repetition_penalty_config.h"
+#include "runtime/components/constrained_decoding/suppress_tokens_config.h"
 #include "runtime/components/model_resources.h"
 #include "runtime/engine/engine_settings.h"
 #include "runtime/engine/io_types.h"
-#include "runtime/executor/audio_executor.h"
-#include "runtime/executor/audio_executor_settings.h"
+#include "runtime/executor/audio/audio_executor.h"
+#include "runtime/executor/audio/audio_executor_settings.h"
 #include "runtime/executor/executor_settings_base.h"
 #include "runtime/executor/fake_llm_executor.h"
 #include "runtime/executor/llm_executor_io_types.h"
@@ -50,6 +50,7 @@
 #include "runtime/proto/token.pb.h"
 #include "runtime/util/status_macros.h"  // IWYU pragma: keep
 #include "runtime/util/test_utils.h"  // NOLINT
+#include "support/tokenizer/tokenizer.h"
 
 namespace litert::lm {
 
@@ -70,7 +71,8 @@ class MockTokenizer : public Tokenizer {
   MOCK_METHOD(absl::StatusOr<int>, TokenToId, (absl::string_view token),
               (override));
   MOCK_METHOD(absl::StatusOr<std::string>, TokenIdsToText,
-              (const std::vector<int>& token_ids), (override));
+              (absl::Span<const int> token_ids, bool skip_special_tokens),
+              (override));
   MOCK_METHOD(TokenizerType, GetTokenizerType, (), (const, override));
   MOCK_METHOD(std::vector<std::string>, GetTokens, (), (const, override));
   MOCK_METHOD(int, GetVocabSize, (), (const, override));
@@ -94,14 +96,15 @@ class ExecutionManagerTest
  protected:
   void SetUp() override {
     tokenizer_ = std::make_unique<MockTokenizer>();
-    EXPECT_CALL(*tokenizer_, TokenIdsToText(ElementsAre(0)))
-        .WillRepeatedly(Return("0"));
-    EXPECT_CALL(*tokenizer_, TokenIdsToText(ElementsAre(4)))
-        .WillRepeatedly(Return("4"));
-    EXPECT_CALL(*tokenizer_, TokenIdsToText(ElementsAre(5)))
-        .WillRepeatedly(Return("5"));
-    EXPECT_CALL(*tokenizer_, TokenIdsToText(ElementsAre(6)))
-        .WillRepeatedly(Return("6"));
+    EXPECT_CALL(*tokenizer_, TokenIdsToText(testing::_, false))
+        .WillRepeatedly(
+            [](absl::Span<const int> ids, bool skip_special_tokens) {
+              std::string result;
+              for (int id : ids) {
+                result += std::to_string(id);
+              }
+              return result;
+            });
     EXPECT_CALL(*tokenizer_, GetVocabSize()).WillRepeatedly(Return(kVocabSize));
   }
 

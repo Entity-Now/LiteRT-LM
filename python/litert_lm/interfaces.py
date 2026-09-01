@@ -20,12 +20,15 @@ import abc
 import collections.abc
 import dataclasses
 from importlib import resources
+import json
 import logging
 import os
+import pathlib
 import sys
 from typing import Any
 
 from ._ffi import ActivationDataType
+from ._ffi import LiteRtLmConstraintProviderType
 from ._messages import Contents
 from ._messages import Message
 
@@ -36,6 +39,15 @@ class Backend(abc.ABC):
   This is the abstract base class for all hardware backends used by LiteRT-LM.
   Use the subclasses (CPU, GPU, NPU) to specify the backend and its options.
   """
+
+  # pylint: disable=invalid-name
+  # These sub-classes are added here to improve the type checking (pyrefly).
+  # The names are chosen before adding the attributes and also consistent with
+  # other langugage bindings.
+  CPU: type[CPU]
+  GPU: type[GPU]
+  NPU: type[NPU]
+  # pylint: enable=invalid-name
 
   def get_name(self) -> str:
     """Returns the string representation of the backend (e.g., 'cpu', 'gpu', 'npu')."""
@@ -58,8 +70,16 @@ class CPU(Backend):
   thread_count: int | None = None
 
 
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class GPU(Backend):
-  """GPU hardware backend for LiteRT-LM."""
+  """GPU hardware backend for LiteRT-LM.
+
+  Attributes:
+    gpu_decode_steps_per_sync: The number of decode steps per sync for GPU
+      backend.
+  """
+
+  gpu_decode_steps_per_sync: int | None = None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -104,7 +124,7 @@ class NPU(Backend):
             " installed."
         ) from e
 
-      available_devices = ov.Core().available_devices
+      available_devices = ov.Core().available_devices  # pyrefly: ignore[unbound-name]
       if "NPU" not in available_devices:
         raise RuntimeError(
             "NPU is supported only for Intel OpenVINO on Windows. No NPU"
@@ -269,6 +289,51 @@ class RepetitionPenaltyConfig:
 
 
 @dataclasses.dataclass
+class NoRepeatNgramConfig:
+  """Configuration for banning repetitive ngrams during generation.
+
+  Attributes:
+      no_repeat_ngram_size: The size of ngrams to ban. If set to an integer
+        greater than 0, all ngrams of that size can only occur once.
+      window_size: The maximum number of recent tokens to consider for banning.
+        A value of 0 means track all infinite history.
+  """
+
+  no_repeat_ngram_size: int | None = None
+  window_size: int | None = None
+
+  def __post_init__(self):
+    if self.no_repeat_ngram_size is not None and self.no_repeat_ngram_size < 0:
+      raise ValueError(
+          "no_repeat_ngram_size should be >= 0, but got"
+          f" {self.no_repeat_ngram_size}."
+      )
+    if self.window_size is not None and self.window_size < 0:
+      raise ValueError(
+          f"window_size should be >= 0, but got {self.window_size}."
+      )
+
+
+@dataclasses.dataclass
+class SuppressTokensConfig:
+  """Configuration for suppressing specific tokens during generation.
+
+  Attributes:
+      suppress_tokens: A collection of token IDs to suppress during generation.
+  """
+
+  suppress_tokens: collections.abc.Collection[int] | None = None
+
+  def __post_init__(self):
+    if self.suppress_tokens is not None:
+      for token_id in self.suppress_tokens:
+        if token_id < 0:
+          raise ValueError(
+              f"Token ID in suppress_tokens should be >= 0, but got {token_id}."
+          )
+
+
+@dataclasses.dataclass
 class LoraRankConfig:
   """Configuration for LoRA ranks.
 
@@ -296,6 +361,19 @@ class LoraConfig:
   audio_lora_path: str | None = None
 
 
+@dataclasses.dataclass
+class ConstrainedDecodingConfig:
+  """Configuration for constrained decoding.
+
+  Attributes:
+      enable: Whether constraint decoding is enabled.
+      provider: The constraint provider type.
+  """
+
+  enable: bool = True
+  provider: LiteRtLmConstraintProviderType | None = None
+
+
 @dataclasses.dataclass(kw_only=True)
 class AbstractEngine(abc.ABC):
   """Abstract base class for LiteRT-LM engines.
@@ -307,7 +385,8 @@ class AbstractEngine(abc.ABC):
         the engine/model's default.
       max_num_images: Maximum number of images that can be processed in a single
         inference call.
-      cache_dir: Directory for caching compiled model artifacts.
+      cache_dir: Directory for caching compiled model artifacts. If None, use
+        the engine's default.
       vision_backend: The hardware backend used for vision encoding.
       audio_backend: The hardware backend used for audio encoding.
       enable_speculative_decoding: Whether to enable speculative decoding. If
@@ -318,18 +397,26 @@ class AbstractEngine(abc.ABC):
       bos_token_id: The BOS token id for the model if one is configured.
       eos_token_ids: Stop token sequences configured for the model.
       activation_data_type: The activation data type used for model execution.
+      use_ringbuffers_local_attention: Whether to use ringbuffers for local
+        attention KV cache on supported models to minimize memory usage. When
+        disabled, memory is allocated for the full context length, enabling
+        instant rewinding at higher memory cost.
+      enable_ynnpack: Whether YNNPACK should delegate supported operations
+        before XNNPACK. If None, use the native engine's default.
   """
 
   model_path: str
   backend: Backend
   max_num_tokens: int | None = None
   max_num_images: int | None = None
-  cache_dir: str = ""
+  cache_dir: str | None = None
   vision_backend: Backend | None = None
   audio_backend: Backend | None = None
   enable_speculative_decoding: bool | None = None
   lora_rank_config: LoraRankConfig | None = None
   activation_data_type: ActivationDataType | None = None
+  use_ringbuffers_local_attention: bool | None = None
+  enable_ynnpack: bool | None = None
 
   def __enter__(self) -> AbstractEngine:
     """Initializes the engine resources."""
@@ -354,11 +441,13 @@ class AbstractEngine(abc.ABC):
       tool_event_handler: ToolEventHandler | None = None,
       automatic_tool_calling: bool = True,
       extra_context: collections.abc.Mapping[str, Any] | None = None,
-      filter_channel_content_from_kv_cache: bool = False,
+      filter_channel_content_from_kv_cache: bool | None = None,
       thinking_config: ThinkingConfig | None = None,
       sampler_config: SamplerConfig | None = None,
+      constrained_decoding_config: ConstrainedDecodingConfig | None = None,
       lora_config: LoraConfig | None = None,
       max_output_tokens: int | None = None,
+      chat_template: str | None = None,
   ) -> AbstractConversation:
     """Creates a new conversation for this engine.
 
@@ -377,8 +466,15 @@ class AbstractEngine(abc.ABC):
         thinking_config: Configuration for thinking/reasoning generation.
         sampler_config: Configuration for the sampling process. If None, then
           uses the engine's default values.
+        constrained_decoding_config: Configuration for constrained decoding.
         lora_config: Configuration for LoRA adapters.
-        max_output_tokens: The maximum number of output tokens.
+        max_output_tokens: The maximum number of tokens to generate per
+          response. For thinking models, both thinking (reasoning) tokens and
+          the final response tokens count towards this limit.
+        chat_template: The Jinja chat template content to use for formatting. If
+          not set, use the default provided by the model or the engine.
+        enable_response_format: Whether to enable response format (constrained
+          decoding). If True, initializes the constraint provider LLGuidance.
     """
 
   @abc.abstractmethod
@@ -421,6 +517,47 @@ class AbstractEngine(abc.ABC):
     """Decodes token ids using the engine's tokenizer."""
 
 
+@dataclasses.dataclass
+class ResponseFormat:
+  """Response format for constrained decoding.
+
+  Currently supports JSON Schema and Regex.
+  """
+
+  class Type:
+    NONE = 0
+    REGEX = 1
+    JSON_OBJECT = 2
+
+  type: int
+  schema_or_pattern: str
+
+  @classmethod
+  def json(cls, schema: dict[str, Any] | str) -> ResponseFormat:
+    """Creates a JSON Schema response format.
+
+    Args:
+      schema: The JSON schema as a dictionary or a JSON string.
+    """
+    if isinstance(schema, dict):
+      schema = json.dumps(schema)
+    elif isinstance(schema, str):
+      try:
+        json.loads(schema)
+      except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON schema string: {e}") from e
+    return cls(type=cls.Type.JSON_OBJECT, schema_or_pattern=schema)
+
+  @classmethod
+  def regex(cls, pattern: str) -> ResponseFormat:
+    """Creates a Regex response format.
+
+    Args:
+      pattern: The regex pattern string.
+    """
+    return cls(type=cls.Type.REGEX, schema_or_pattern=pattern)
+
+
 class AbstractConversation(abc.ABC):
   """Abstract base class for managing LiteRT-LM conversations.
 
@@ -433,7 +570,11 @@ class AbstractConversation(abc.ABC):
       thinking_config: Configuration for thinking/reasoning generation.
       sampler_config: Configuration for the sampling process.
       lora_config: Configuration for LoRA adapters.
-      max_output_tokens: The maximum number of output tokens.
+      max_output_tokens: The maximum number of tokens to generate per response.
+        For thinking models, both thinking (reasoning) tokens and the final
+        response tokens count towards this limit.
+      chat_template: The Jinja chat template content to use for formatting. If
+        not set, use the default provided by the model or the engine.
   """
 
   def __init__(
@@ -454,6 +595,7 @@ class AbstractConversation(abc.ABC):
       sampler_config: SamplerConfig | None = None,
       lora_config: LoraConfig | None = None,
       max_output_tokens: int | None = None,
+      chat_template: str | None = None,
   ):
     """Initializes the instance.
 
@@ -469,7 +611,11 @@ class AbstractConversation(abc.ABC):
         sampler_config: Configuration for the sampling process. If None, then
           uses the engine's default values.
         lora_config: Configuration for LoRA adapters.
-        max_output_tokens: The maximum number of output tokens.
+        max_output_tokens: The maximum number of tokens to generate per
+          response. For thinking models, both thinking (reasoning) tokens and
+          the final response tokens count towards this limit.
+        chat_template: The Jinja chat template content to use for formatting. If
+          not set, use the default provided by the model or the engine.
     """
     self.messages = messages or []
     self.tools = tools or []
@@ -478,6 +624,7 @@ class AbstractConversation(abc.ABC):
     self.extra_context = extra_context or {}
     self.thinking_config = thinking_config
     self.sampler_config = sampler_config
+    self.chat_template = chat_template
     self.lora_config = lora_config
     self.max_output_tokens = max_output_tokens
 
@@ -495,8 +642,11 @@ class AbstractConversation(abc.ABC):
       message: str | Contents | Message | collections.abc.Mapping[str, Any],
       *,
       repetition_penalty_config: RepetitionPenaltyConfig | None = None,
+      no_repeat_ngram_config: NoRepeatNgramConfig | None = None,
+      suppress_tokens_config: SuppressTokensConfig | None = None,
       max_output_tokens: int | None = None,
       thinking_config: ThinkingConfig | None = None,
+      response_format: ResponseFormat | None = None,
   ) -> collections.abc.Mapping[str, Any]:
     """Sends a message and returns the response.
 
@@ -509,8 +659,14 @@ class AbstractConversation(abc.ABC):
           `collections.abc.Mapping` (super flexible raw dictionary format).
         repetition_penalty_config: Configuration for penalizing repetitive
           tokens.
-        max_output_tokens: The maximum number of output tokens.
+        no_repeat_ngram_config: Configuration for banning repetitive ngrams.
+        suppress_tokens_config: Configuration for suppressing specific tokens.
+        max_output_tokens: The maximum number of tokens to generate per
+          response. For thinking models, both thinking (reasoning) tokens and
+          the final response tokens count towards this limit.
         thinking_config: Configuration for thinking/reasoning generation.
+        response_format: The expected format of the response. If provided, the
+          response will be constrained to this format.
 
     Returns:
         A dictionary containing the model's response. The structure is:
@@ -523,8 +679,11 @@ class AbstractConversation(abc.ABC):
       message: str | Contents | Message | collections.abc.Mapping[str, Any],
       *,
       repetition_penalty_config: RepetitionPenaltyConfig | None = None,
+      no_repeat_ngram_config: NoRepeatNgramConfig | None = None,
+      suppress_tokens_config: SuppressTokensConfig | None = None,
       max_output_tokens: int | None = None,
       thinking_config: ThinkingConfig | None = None,
+      response_format: ResponseFormat | None = None,
   ) -> collections.abc.Iterator[collections.abc.Mapping[str, Any]]:
     """Sends a message and streams the response.
 
@@ -537,8 +696,14 @@ class AbstractConversation(abc.ABC):
           `collections.abc.Mapping` (super flexible raw dictionary format).
         repetition_penalty_config: Configuration for penalizing repetitive
           tokens.
-        max_output_tokens: The maximum number of output tokens.
+        no_repeat_ngram_config: Configuration for banning repetitive ngrams.
+        suppress_tokens_config: Configuration for suppressing specific tokens.
+        max_output_tokens: The maximum number of tokens to generate per
+          response. For thinking models, both thinking (reasoning) tokens and
+          the final response tokens count towards this limit.
         thinking_config: Configuration for thinking/reasoning generation.
+        response_format: The expected format of the response. If provided, the
+          response will be constrained to this format.
 
     Returns:
         An iterator yielding dictionaries containing chunks of the model's
@@ -575,6 +740,15 @@ class AbstractConversation(abc.ABC):
 
   def cancel_process(self) -> None:
     """Cancels the current inference process."""
+
+  def get_debug_artifacts(self) -> DebugArtifacts | None:
+    """Retrieves intermediate tensor dumps and execution trace logs.
+
+    Returns:
+      DebugArtifacts instance containing sorted Safetensors paths and the trace
+      log path, or None if the debugger is disabled or uninitialized.
+    """
+    return None
 
 
 @dataclasses.dataclass
@@ -669,6 +843,12 @@ class AbstractBenchmark(abc.ABC):
         prompt is shorter than `prefill_tokens`, the remaining tokens are padded
         with zero. If it is longer, the prompt is truncated to `prefill_tokens`.
       activation_data_type: The activation data type used for model execution.
+      use_ringbuffers_local_attention: Whether to use ringbuffers for local
+        attention KV cache on supported models to minimize memory usage. When
+        disabled, memory is allocated for the full context length, enabling
+        instant rewinding at higher memory cost.
+      enable_ynnpack: Whether YNNPACK should delegate supported operations
+        before XNNPACK. If None, use the native engine's default.
   """
 
   model_path: str
@@ -676,10 +856,12 @@ class AbstractBenchmark(abc.ABC):
   prefill_tokens: int = 256
   decode_tokens: int = 256
   max_num_tokens: int | None = None
-  cache_dir: str = ""
+  cache_dir: str | None = None
   enable_speculative_decoding: bool | None = None
   prompt: str = "How are you"
   activation_data_type: ActivationDataType | None = None
+  use_ringbuffers_local_attention: bool | None = None
+  enable_ynnpack: bool | None = None
 
   @abc.abstractmethod
   def run(self) -> BenchmarkInfo:
@@ -786,3 +968,26 @@ class AbstractSession(abc.ABC):
   @abc.abstractmethod
   def cancel_process(self) -> None:
     """Cancels the ongoing inference process."""
+
+  def get_debug_artifacts(self) -> DebugArtifacts | None:
+    """Retrieves intermediate tensor dumps and execution trace logs.
+
+    Returns:
+        DebugArtifacts instance containing sorted Safetensors paths and the
+        trace log path, or None if the debugger is disabled or uninitialized.
+    """
+    return None
+
+
+@dataclasses.dataclass
+class DebugArtifacts:
+  """Debug artifacts generated by LiteRT-LM Debugger.
+
+  Attributes:
+      tensor_paths: A list of file paths to HuggingFace Safetensors dumps.
+      trace_log_path: File path to the token generation trace log (JSONL), or
+        None if no trace log was produced.
+  """
+
+  tensor_paths: list[pathlib.Path]
+  trace_log_path: pathlib.Path | None = None

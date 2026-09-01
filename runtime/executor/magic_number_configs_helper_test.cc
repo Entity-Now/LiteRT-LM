@@ -24,6 +24,7 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/status/status.h"  // from @com_google_absl
 #include "absl/status/status_macros.h"  // from @com_google_absl
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
@@ -100,6 +101,8 @@ class ModelResourcesMock : public ModelResources {
  public:
   MOCK_METHOD(absl::StatusOr<const proto::LlmMetadata*>, GetLlmMetadata, (),
               (override));
+  MOCK_METHOD(absl::StatusOr<const proto::ExecutorMetadata*>,
+              GetExecutorMetadata, (), (override));
   MOCK_METHOD(absl::StatusOr<std::unique_ptr<Tokenizer>>, GetTokenizer, (),
               (override));
   MOCK_METHOD(absl::StatusOr<absl::string_view>, GetTFLiteModelBuffer,
@@ -119,6 +122,11 @@ class ModelResourcesMock : public ModelResources {
   }
 
   explicit ModelResourcesMock(const Model& model) : model_(model) {}
+
+  absl::StatusOr<FileRegion> GetTFLiteModelSectionFileRegion(
+      ModelType model_type) override {
+    return absl::UnimplementedError("Unimplemented");
+  }
 
  private:
   const Model& model_;

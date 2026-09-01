@@ -89,6 +89,7 @@ class Engine(val engineConfig: EngineConfig) : AutoCloseable {
           (engineConfig.audioBackend as? Backend.NPU)?.nativeLibraryDir ?: "",
           mainBackendNumThreads,
           audioBackendNumThreads,
+          @OptIn(ExperimentalApi::class) ExperimentalFlags.visualTokenBudget ?: -1,
         )
     }
   }
@@ -161,9 +162,11 @@ class Engine(val engineConfig: EngineConfig) : AutoCloseable {
           conversationConfig.prefillPrefaceOnInit,
           conversationConfig.maxOutputToken ?: -1,
           conversationConfig.thinkingConfig,
+          conversationConfig.enableResponseFormat,
         ),
         toolManager,
         conversationConfig.automaticToolCalling,
+        conversationConfig.enableResponseFormat,
       )
     }
   }

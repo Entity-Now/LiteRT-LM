@@ -26,15 +26,15 @@
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "nlohmann/json.hpp"  // from @nlohmann_json
-#include "runtime/components/logits_processor/constrained_decoding/constraint.h"
+#include "runtime/components/constrained_decoding/constraint.h"
 #if !defined(LITERT_LM_FST_CONSTRAINTS_DISABLED)
-#include "runtime/components/logits_processor/constrained_decoding/gemma_model_constraint_provider.h"
+#include "runtime/components/constrained_decoding/gemma_model_constraint_provider.h"
 #endif
-#include "support/tokenizer/tokenizer.h"  // from @litert
 #include "runtime/conversation/io_types.h"
 #include "runtime/conversation/model_data_processor/function_gemma_data_processor_config.h"
 #include "runtime/conversation/model_data_processor/model_data_processor.h"
 #include "runtime/engine/io_types.h"
+#include "support/tokenizer/tokenizer.h"
 
 namespace litert::lm {
 
@@ -108,7 +108,7 @@ class FunctionGemmaDataProcessor
       const TypeSafeModelDataProcessor<FunctionGemmaDataProcessorConfig,
                                        FunctionGemmaDataProcessorArguments>&
           other) override {
-    ABSL_LOG(INFO) << "FunctionGemmaDataProcessor::CloneStateImpl is a no-op.";
+    ABSL_VLOG(1) << "FunctionGemmaDataProcessor::CloneStateImpl is a no-op.";
     return absl::OkStatus();
   }
 

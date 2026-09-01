@@ -31,12 +31,12 @@
 #include "runtime/components/model_resources.h"
 #include "runtime/engine/engine_settings.h"
 #include "runtime/engine/io_types.h"
-#include "runtime/executor/audio_executor.h"
-#include "runtime/executor/audio_executor_settings.h"
+#include "runtime/executor/audio/audio_executor.h"
+#include "runtime/executor/audio/audio_executor_settings.h"
 #include "runtime/executor/llm_executor.h"
 #include "runtime/executor/llm_executor_settings.h"
-#include "runtime/executor/vision_executor.h"
-#include "runtime/executor/vision_executor_settings.h"
+#include "runtime/executor/vision/vision_executor.h"
+#include "runtime/executor/vision/vision_executor_settings.h"
 #include "runtime/framework/resource_management/context_handler/context_handler.h"
 
 namespace litert::lm {
@@ -144,6 +144,18 @@ class ResourceManager {
   // Returns the vision executor properties.
   absl::StatusOr<VisionExecutorProperties> GetVisionExecutorProperties()
       ABSL_LOCKS_EXCLUDED(vision_executor_mutex_);
+
+  // Resets the LLM executor and clears the current context handler.
+  void ResetCurrentHandler() ABSL_LOCKS_EXCLUDED(executor_mutex_);
+
+  // Updates whether to enable Metal residency set on GPU at runtime.
+  absl::Status UpdateGpuEnableMetalResidencySet(bool enable_metal_residency_set)
+      ABSL_LOCKS_EXCLUDED(executor_mutex_);
+
+  // Updates the LLM executor settings.
+  absl::Status UpdateExecutorSettings(
+      const LlmExecutorSettings& executor_settings)
+      ABSL_LOCKS_EXCLUDED(executor_mutex_);
 
  private:
   // Creates the litert environment if it is not created yet.

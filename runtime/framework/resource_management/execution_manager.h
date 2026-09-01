@@ -29,10 +29,10 @@
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/time/time.h"  // from @com_google_absl
-#include "runtime/components/logits_processor/constrained_decoding/constraint.h"
-#include "runtime/components/logits_processor/no_repeat_ngram_config.h"
-#include "runtime/components/logits_processor/repetition_penalty_config.h"
-#include "runtime/components/logits_processor/suppress_tokens_config.h"
+#include "runtime/components/constrained_decoding/constraint.h"
+#include "runtime/components/constrained_decoding/no_repeat_ngram_config.h"
+#include "runtime/components/constrained_decoding/repetition_penalty_config.h"
+#include "runtime/components/constrained_decoding/suppress_tokens_config.h"
 #include "runtime/components/sampler.h"
 #include "runtime/components/stop_token_detector.h"
 #include "runtime/engine/engine_settings.h"
@@ -102,6 +102,13 @@ class ExecutionManager {
 
   virtual absl::Status WaitUntilSessionDone(SessionId session_id,
                                             absl::Duration timeout) = 0;
+
+  // Updates whether to enable Metal residency set on GPU at runtime.
+  virtual absl::Status UpdateGpuEnableMetalResidencySet(
+      bool enable_metal_residency_set) {
+    return absl::UnimplementedError(
+        "UpdateGpuEnableMetalResidencySet not implemented.");
+  }
 
   // Waits until all tasks are done or the timeout is reached.
   // Returns:

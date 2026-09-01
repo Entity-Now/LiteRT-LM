@@ -40,10 +40,6 @@
 #
 # Default build options. These are applied first and unconditionally.
 
-# Shlibs built from the source tree should resolve symbols in the exectuable.
-build --define=resolve_symbols_in_exec=true
-build:windows --define=resolve_symbols_in_exec=false
-
 # Exclude OpenCL from Linux and Windows builds.
 build:linux --copt=-DLITERT_DISABLE_OPENCL_SUPPORT=1
 build:windows --copt=/DLITERT_DISABLE_OPENCL_SUPPORT=1
@@ -267,6 +263,8 @@ build:linux --copt="-Werror=unused-result"
 # Add switch as an error on Linux.
 build:linux --copt="-Wswitch"
 build:linux --copt="-Werror=switch"
+# Suppress switch-default warnings on Linux. Skia has a lot of these.
+build:linux --copt="-Wno-switch-default"
 # This was added in clang-16 by https://reviews.llvm.org/D133574.
 # Can be removed once upb is updated, since a type definition is used within
 # offset of in the current version of ubp.
@@ -279,6 +277,7 @@ build:release_cpu_linux --repo_env=TF_SYSROOT="/dt9"
 
 # Linux ARM64 specific options
 build:linux_arm64 --copt="-mtune=generic" --copt="-march=armv8-a" --copt="-O3"
+build:linux_arm64 --define=litert_enable_ynnpack=true
 
 # On Windows, `__cplusplus` is wrongly defined without this switch
 # See https://devblogs.microsoft.com/cppblog/msvc-now-correctly-reports-__cplusplus/

@@ -87,6 +87,8 @@ _SUBCOMMANDS = (
     "toml",
     "system_metadata",
     "llm_metadata",
+    "executor_metadata",
+    "embedding_metadata",
     "tflite_model",
     "tflite_weights",
     "sp_tokenizer",
@@ -175,6 +177,43 @@ def _add_llm_metadata_parser(subparsers) -> None:
       type=str,
       required=True,
       help="The path to the llm metadata file.",
+  )
+
+
+def _add_executor_metadata_parser(subparsers) -> None:
+  """Adds a parser for executor metadata to the subparsers."""
+  executor_metadata_parser = subparsers.add_parser(
+      "executor_metadata",
+      description=(
+          "Add executor metadata to the LiteRT-LM file. Can be a text or binary"
+          " proto file."
+      ),
+      help="Add executor metadata.",
+  )
+  executor_metadata_parser.add_argument(
+      "--path",
+      type=str,
+      required=True,
+      help="The path to the executor metadata file.",
+  )
+  _add_metadata_arguments(executor_metadata_parser)
+
+
+def _add_embedding_metadata_parser(subparsers) -> None:
+  """Adds a parser for embedding metadata to the subparsers."""
+  embedding_metadata_parser = subparsers.add_parser(
+      "embedding_metadata",
+      description=(
+          "Add embedding metadata to the LiteRT-LM file. Can be a text or"
+          " binary proto file."
+      ),
+      help="Add embedding metadata.",
+  )
+  embedding_metadata_parser.add_argument(
+      "--path",
+      type=str,
+      required=True,
+      help="The path to the embedding metadata file.",
   )
 
 
@@ -328,6 +367,8 @@ def _build_parser() -> argparse.ArgumentParser:
   _add_toml_parser(subparsers)
   _add_system_metadata_parser(subparsers)
   _add_llm_metadata_parser(subparsers)
+  _add_executor_metadata_parser(subparsers)
+  _add_embedding_metadata_parser(subparsers)
   _add_tflite_model_parser(subparsers)
   _add_tflite_weights_parser(subparsers)
   _add_sentencepiece_tokenizer_parser(subparsers)
@@ -439,6 +480,24 @@ def _build_llm_metadata(
   builder.add_llm_metadata(args.path, additional_metadata=metadata)
 
 
+def _build_executor_metadata(
+    args: argparse.Namespace,
+    builder: litertlm_builder.LitertLmFileBuilder,
+) -> None:
+  """Builds executor metadata from the parsed arguments."""
+  metadata = _get_metadata_from_args(args)
+  builder.add_executor_metadata(args.path, additional_metadata=metadata)
+
+
+def _build_embedding_metadata(
+    args: argparse.Namespace,
+    builder: litertlm_builder.LitertLmFileBuilder,
+) -> None:
+  """Builds embedding metadata from the parsed arguments."""
+  metadata = _get_metadata_from_args(args)
+  builder.add_embedding_metadata(args.path, additional_metadata=metadata)
+
+
 def _build_tflite_model(
     args: argparse.Namespace,
     builder: litertlm_builder.LitertLmFileBuilder,
@@ -525,7 +584,9 @@ def _build_litertlm_file(parsed_args: list[argparse.Namespace]) -> None:
       os.makedirs(output_dir, exist_ok=True)
     with litertlm_core.open_file(output_path, "wb") as f:
       builder = litertlm_builder.LitertLmFileBuilder.from_toml_file(toml_path)
-      builder.build(f)
+      builder.build(
+          cast(BinaryIO, f),
+      )
   else:
     builder = litertlm_builder.LitertLmFileBuilder()
     output_path = None
@@ -535,6 +596,10 @@ def _build_litertlm_file(parsed_args: list[argparse.Namespace]) -> None:
           _build_system_metadata(parsed_arg, builder)
         case "llm_metadata":
           _build_llm_metadata(parsed_arg, builder)
+        case "executor_metadata":
+          _build_executor_metadata(parsed_arg, builder)
+        case "embedding_metadata":
+          _build_embedding_metadata(parsed_arg, builder)
         case "tflite_model":
           _build_tflite_model(parsed_arg, builder)
         case "tflite_weights":
@@ -547,13 +612,14 @@ def _build_litertlm_file(parsed_args: list[argparse.Namespace]) -> None:
           output_path = parsed_arg.path
         case _:
           raise ValueError(f"Unknown subcommand: {parsed_arg.command}")
-
     assert output_path, "Output path is required."
     output_dir = os.path.dirname(output_path)
     if output_dir:
       os.makedirs(output_dir, exist_ok=True)
     with litertlm_core.open_file(output_path, "wb") as f:
-      builder.build(cast(BinaryIO, f))
+      builder.build(
+          cast(BinaryIO, f),
+      )
 
   print(f"LiteRT-LM file successfully created at {output_path}")
 

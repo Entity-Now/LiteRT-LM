@@ -34,6 +34,8 @@ pytype_strict_library(
     deps = [
         "//python/litert_lm",
         "//python/litert_lm_builder:litertlm_builder",
+        "//python/litert_lm_cli:common",
+        "//python/litert_lm_cli:config",
         "//python/litert_lm_cli:help_formatter",
         "//python/litert_lm_cli:model",
         requirement("click"),
@@ -79,6 +81,21 @@ pytype_strict_library(
 )
 
 pytype_strict_library(
+    name = "describe",
+    srcs = ["describe.py"],
+    imports = [".."],
+    deps = [
+        "//python/litert_lm",
+        "//python/litert_lm_cli:cli_helpers",
+        "//python/litert_lm_cli:common",
+        "//python/litert_lm_cli:help_formatter",
+        "//python/litert_lm_cli:huggingface_download",
+        "//python/litert_lm_cli:model",
+        requirement("click"),
+    ],
+)
+
+pytype_strict_library(
     name = "delete",
     srcs = ["delete.py"],
     imports = [".."],
@@ -94,6 +111,29 @@ pytype_strict_library(
     srcs = ["rename.py"],
     imports = [".."],
     deps = [
+        "//python/litert_lm_cli:help_formatter",
+        "//python/litert_lm_cli:model",
+        requirement("click"),
+    ],
+)
+
+pytype_strict_library(
+    name = "pack",
+    srcs = ["pack.py"],
+    imports = [".."],
+    deps = [
+        "//python/litert_lm_builder:litertlm_builder",
+        "//python/litert_lm_cli:help_formatter",
+        requirement("click"),
+    ],
+)
+
+pytype_strict_library(
+    name = "unpack",
+    srcs = ["unpack.py"],
+    imports = [".."],
+    deps = [
+        "//python/litert_lm_builder:litertlm_builder",
         "//python/litert_lm_cli:help_formatter",
         "//python/litert_lm_cli:model",
         requirement("click"),
@@ -149,6 +189,7 @@ py_test(
     deps = [
         ":serve",
         "//python/litert_lm",
+        "//python/litert_lm_cli:config",
         "//python/litert_lm_cli:model",
         "@absl_py//absl/testing:absltest",
     ],
@@ -163,6 +204,24 @@ py_test(
     ],
     deps = [
         ":import",
+        "//python/litert_lm_cli:cli_helpers",
+        "//python/litert_lm_cli:huggingface_download",
+        "//python/litert_lm_cli:model",
+        "@absl_py//absl/testing:absltest",
+        requirement("click"),
+    ],
+)
+
+py_test(
+    name = "describe_test",
+    srcs = ["describe_test.py"],
+    tags = [
+        "nomacos",
+        "nowindows",
+    ],
+    deps = [
+        ":describe",
+        "//python/litert_lm",
         "//python/litert_lm_cli:cli_helpers",
         "//python/litert_lm_cli:huggingface_download",
         "//python/litert_lm_cli:model",

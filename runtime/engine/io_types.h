@@ -15,6 +15,7 @@
 #ifndef THIRD_PARTY_ODML_LITERT_LM_RUNTIME_ENGINE_IO_TYPES_H_
 #define THIRD_PARTY_ODML_LITERT_LM_RUNTIME_ENGINE_IO_TYPES_H_
 
+#include <chrono>  // NOLINT: Required for monotonic benchmark timing.
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -29,12 +30,12 @@
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/time/time.h"  // from @com_google_absl
-#include "support/util/io_types.h"  // from @litert
-#include "runtime/components/logits_processor/constrained_decoding/constraint.h"
-#include "runtime/components/logits_processor/no_repeat_ngram_config.h"
-#include "runtime/components/logits_processor/repetition_penalty_config.h"
-#include "runtime/components/logits_processor/suppress_tokens_config.h"
+#include "runtime/components/constrained_decoding/constraint.h"
+#include "runtime/components/constrained_decoding/no_repeat_ngram_config.h"
+#include "runtime/components/constrained_decoding/repetition_penalty_config.h"
+#include "runtime/components/constrained_decoding/suppress_tokens_config.h"
 #include "runtime/proto/engine.pb.h"
+#include "support/util/io_types.h"
 
 namespace litert::lm {
 
@@ -285,12 +286,17 @@ class BenchmarkInfo {
   // the time spent for decoding the first token.
   double GetTimeToFirstToken() const;
 
+  // --- Profile summary for per-op profiling ---
+  const std::string& GetProfileSummary() const;
+  void SetProfileSummary(absl::string_view profile_summary);
+
  private:
   proto::BenchmarkParams benchmark_params_;
 
-  // Map of phase names to start time.
-  std::map<std::string, absl::Time> start_time_map_;
-  std::map<std::string, absl::Time> mark_time_map_;
+  // Wall-clock adjustments must not affect measured intervals.
+  using MonotonicTime = std::chrono::steady_clock::time_point;
+  std::map<std::string, MonotonicTime> start_time_map_;
+  std::map<std::string, MonotonicTime> mark_time_map_;
   // The current index of the prefill / decode / text_to_token_ids turn.
   int prefill_turn_index_ = 0;
   int decode_turn_index_ = 0;
@@ -301,6 +307,7 @@ class BenchmarkInfo {
   std::vector<BenchmarkTurnData> prefill_turns_;
   std::vector<BenchmarkTurnData> decode_turns_;
   std::vector<BenchmarkTurnData> text_to_token_ids_turns_;
+  std::string profile_summary_;
 };
 std::ostream& operator<<(std::ostream& os, const BenchmarkInfo& info);
 
@@ -355,12 +362,14 @@ class DecodeConfig {
   // Returns a pointer to the constraint, or nullptr if no constraint is set.
   Constraint* absl_nullable GetConstraint() const { return constraint_; }
 
-  // Sets the max output tokens.
+  // Sets the max output tokens. For thinking models, both thinking (reasoning)
+  // tokens and the final response tokens count towards this limit.
   void SetMaxOutputTokens(int max_output_tokens) {
     max_output_tokens_ = max_output_tokens;
   }
 
-  // Returns the max output tokens.
+  // Returns the max output tokens. For thinking models, both thinking
+  // (reasoning) tokens and the final response tokens count towards this limit.
   std::optional<int> GetMaxOutputTokens() const { return max_output_tokens_; }
 
   // Sets the thinking token budget.
@@ -408,6 +417,13 @@ class DecodeConfig {
   std::optional<int> thinking_token_budget_ = std::nullopt;
   std::vector<int> thinking_start_token_ids_;
   std::vector<int> thinking_end_token_ids_;
+};
+
+// Runtime debug metadata associated with a Session.
+struct SessionDebugInfo {
+  // Relative capture directory path under cache_dir (e.g.
+  // "litert_lm_debugger/0").
+  std::string capture_dir;
 };
 
 }  // namespace litert::lm

@@ -2,14 +2,14 @@
 
 workspace(name = "litert_lm")
 
-# UPDATED = 2026-06-29
-LITERT_REF = "622f1f3c1352f4bc2925061b8cb72e9ce52874fe"
+# UPDATED = 2026-08-27
+LITERT_REF = "9fe5be45564c868408e6514c8aabb83e211a0911"
 
-LITERT_SHA256 = "f3fd51d1e1eb33472ba425462bf53b05ad02bddca9cd58c61209d4a8be7829d0"
+LITERT_SHA256 = "5dbb113744e103f899c7b1b7c5479126b36a0b7414c3d971185c1f02041bfa39"
 
-TENSORFLOW_REF = "f197d45528bb1dcf6e2d5409907c1352c30c0e5e"
+TENSORFLOW_REF = "d9a8da74b4c3de28a39ab34ad007838d6bc30c67"
 
-TENSORFLOW_SHA256 = "0a877fd2a217030441a316a6a3404ba9d3e56d420fe80d9a9a5724f7781d1cc0"
+TENSORFLOW_SHA256 = "cd46b37c0f722d5a48c0accc9618cc5684c553332b913091023703461f318d9b"
 
 # buildifier: disable=load-on-top
 
@@ -92,6 +92,16 @@ http_archive(
     url = "https://github.com/abseil/abseil-cpp/archive/20260526.0.tar.gz",
 )
 
+# Toolchains for ML projects
+# Older version than one tensorflow uses as current tensorflow breaks workspace build.
+# Details: https://github.com/google-ml-infra/rules_ml_toolchain
+http_archive(
+    name = "rules_ml_toolchain",
+    sha256 = "3b05687842427041c65d1bc2f4aeda3a3079557120f5be8c34690087a88c5de5",
+    strip_prefix = "rules_ml_toolchain-2eddbc595cc0bbe650c2640204f66b14f015f1a8",
+    url = "https://github.com/google-ml-infra/rules_ml_toolchain/archive/2eddbc595cc0bbe650c2640204f66b14f015f1a8.tar.gz",
+)
+
 # TensorFlow
 http_archive(
     name = "org_tensorflow",
@@ -110,15 +120,6 @@ http_archive(
 load("@org_tensorflow//tensorflow:workspace3.bzl", "tf_workspace3")
 
 tf_workspace3()
-
-# Toolchains for ML projects
-# Details: https://github.com/google-ml-infra/rules_ml_toolchain
-http_archive(
-    name = "rules_ml_toolchain",
-    sha256 = "9285d90601757838d064a12f51f14374d40064ddc2fa198979908b6bd0f89348",
-    strip_prefix = "rules_ml_toolchain-7f40603f574b95746152332ef3ad5fce63f1768d",
-    url = "https://github.com/google-ml-infra/rules_ml_toolchain/archive/7f40603f574b95746152332ef3ad5fce63f1768d.tar.gz",
-)
 
 load(
     "@rules_ml_toolchain//cc/deps:cc_toolchain_deps.bzl",
@@ -366,24 +367,29 @@ http_archive(
     build_file = "@//:BUILD.minizip",
     sha256 = "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23",
     strip_prefix = "zlib-1.3.1/contrib/minizip",
-    url = "https://zlib.net/fossils/zlib-1.3.1.tar.gz",
+    urls = [
+        "https://storage.googleapis.com/mirror.tensorflow.org/zlib.net/fossils/zlib-1.3.1.tar.gz",
+        "https://mirror.bazel.build/zlib.net/fossils/zlib-1.3.1.tar.gz",
+        "https://zlib.net/fossils/zlib-1.3.1.tar.gz",
+    ],
 )
 
 http_archive(
     name = "sentencepiece",
     build_file = "@//:BUILD.sentencepiece",
     patch_cmds = [
-        # Empty config.h seems enough.
-        "touch config.h",
+        "printf '#ifndef CONFIG_H_\\n#define CONFIG_H_\\n#define VERSION \"0.2.2\"\\n#define PACKAGE \"sentencepiece\"\\n#define PACKAGE_STRING \"sentencepiece\"\\n#define INSTALL_DATADIR \"\"\\n#endif\\n' > config.h",
+        "mv src/* .",
         # Replace third_party/absl/ with absl/ in *.h and *.cc files.
         "sed -i -e 's|#include \"third_party/absl/|#include \"absl/|g' *.h *.cc",
-        # Replace third_party/darts_clone/ with include/ in *.h and *.cc files.
-        "sed -i -e 's|#include \"third_party/darts_clone/|#include \"include/|g' *.h *.cc",
+        # Replace third_party/protobuf-lite/ with google/protobuf/ in *.h and *.cc files.
+        "sed -i -e 's|#include \"third_party/protobuf-lite/google/protobuf/|#include \"google/protobuf/|g' *.h *.cc",
+        "sed -i -e 's|#include \"third_party/protobuf/|#include \"google/protobuf/|g' *.h *.cc",
+        "rm -rf third_party/protobuf-lite third_party/protobuf third_party/absl third_party/abseil-cpp",
     ],
-    patches = ["@//:PATCH.sentencepiece"],
-    sha256 = "9970f0a0afee1648890293321665e5b2efa04eaec9f1671fcf8048f456f5bb86",
-    strip_prefix = "sentencepiece-0.2.0/src",
-    url = "https://github.com/google/sentencepiece/archive/refs/tags/v0.2.0.tar.gz",
+    sha256 = "92381f713e094a15a1ccff1ac4a5315a4c4b82a99ac1332d6ac53c9dc8e1bcf1",
+    strip_prefix = "sentencepiece-0.2.2",
+    url = "https://github.com/google/sentencepiece/archive/refs/tags/v0.2.2.tar.gz",
 )
 
 http_archive(
@@ -391,8 +397,6 @@ http_archive(
     patch_cmds = [
         # Replace @//third_party with @litert//third_party in files under third_party/.
         "sed -i -e 's|\"@//third_party/|\"@litert//third_party/|g' third_party/*/*",
-        # Replace @stblib with @stb://stblib in support/*/BUILD files.
-        "sed -i -e 's|\"@stblib\"|\"@stb//:stblib\"|g' support/*/BUILD",
     ],
     sha256 = LITERT_SHA256,
     strip_prefix = "LiteRT-" + LITERT_REF,
@@ -455,6 +459,10 @@ http_jar(
 http_archive(
     name = "skia",
     patch_args = ["-p1"],
+    patch_cmds = [
+        # Replace <jpeglib.h> with "jpeglib.h".
+        "sed -i -e 's|#include <jpeglib.h>|#include \"jpeglib.h\"|g' */*.cpp */*.h */*/*.cpp */*/*.h",
+    ],
     patches = ["@//:PATCH.skia"],
     repo_mapping = {
         "@libpng": "@png",
@@ -471,6 +479,14 @@ http_archive(
     sha256 = "2fe28173428f8eebf2aa8a665bad32136086cc065f50c7154678a96250d1cde1",
     strip_prefix = "skia-226ae9d866748a2e68b6dbf114b37129c380a298/include/config",
     urls = ["https://github.com/google/skia/archive/226ae9d866748a2e68b6dbf114b37129c380a298.zip"],
+)
+
+http_archive(
+    name = "espeak_ng",
+    build_file = "@//:BUILD.espeak_ng",
+    sha256 = "bb4338102ff3b49a81423da8a1a158b420124b055b60fa76cfb4b18677130a23",
+    strip_prefix = "espeak-ng-1.52.0",
+    urls = ["https://github.com/espeak-ng/espeak-ng/archive/refs/tags/1.52.0.tar.gz"],
 )
 
 # Android rules. Need latest rules_android_ndk to use NDK 26+.
@@ -518,6 +534,11 @@ google_tensor()
 load("@litert//third_party/intel_openvino:openvino.bzl", "openvino_configure")
 
 openvino_configure()
+
+# SAMSUNG EXYNOS_AI_LITECORE----------------------------------------------------------------------
+load("@litert//third_party/exynos_ai_litecore:workspace.bzl", "exynos_ai_litecore")
+
+exynos_ai_litecore()
 
 http_archive(
     name = "nanobind_json",

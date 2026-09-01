@@ -38,16 +38,16 @@
 #include "runtime/components/model_resources.h"
 #include "runtime/engine/engine_settings.h"
 #include "runtime/engine/io_types.h"
-#include "runtime/executor/audio_executor.h"
-#include "runtime/executor/audio_executor_settings.h"
+#include "runtime/executor/audio/audio_executor.h"
+#include "runtime/executor/audio/audio_executor_settings.h"
 #include "runtime/executor/audio_litert_compiled_model_executor.h"
 #include "runtime/executor/executor_settings_base.h"
 #include "runtime/executor/llm_executor.h"
 #include "runtime/executor/llm_executor_io_types.h"
 #include "runtime/executor/llm_executor_processed_tokens.h"
 #include "runtime/executor/llm_executor_settings.h"
-#include "runtime/executor/vision_executor.h"
-#include "runtime/executor/vision_executor_settings.h"
+#include "runtime/executor/vision/vision_executor.h"
+#include "runtime/executor/vision/vision_executor_settings.h"
 #include "runtime/executor/vision_litert_compiled_model_executor.h"
 #include "runtime/framework/resource_management/context_handler/context_handler.h"
 #include "runtime/framework/resource_management/utils/movable_mutex_lock.h"
@@ -252,10 +252,26 @@ class LockedLlmExecutor : public LlmExecutor {
     // the matching tokens, and then call llm_executor_->Prefill with the
     // optimized inputs and time step.
 
+    // See if GPU artisan ringbuffers are in use.
+    bool uses_ringbuffers = false;
+    auto llm_executor_settings = llm_executor_->GetExecutorSettings();
+    if (llm_executor_settings.ok()) {
+      if (llm_executor_settings->GetBackend() ==
+          litert::lm::Backend::GPU_ARTISAN) {
+        LITERT_ASSIGN_OR_RETURN(
+            GpuArtisanConfig gpu_artisan_config,
+            llm_executor_settings->GetBackendConfig<GpuArtisanConfig>());
+        uses_ringbuffers = gpu_artisan_config.use_autosized_ringbuffers;
+      }
+    }
     // If the processed tokens size is larger than the current step, update
-    // the input_ids and current_step by removing the matching tokens.
-    ABSL_RETURN_IF_ERROR(RemoveMatchingTokens(
-        processed_tokens->GetCopyOfTokens()[0], &input_ids_vec, &current_step));
+    // the input_ids and current_step by removing the matching tokens. This
+    // must currently be skipped when GPU artisan ringbuffers are enabled.
+    if (!uses_ringbuffers) {
+      ABSL_RETURN_IF_ERROR(
+          RemoveMatchingTokens(processed_tokens->GetCopyOfTokens()[0],
+                               &input_ids_vec, &current_step));
+    }
     // If the updated input_ids is empty, meaning all required prefill
     // tokens have been processed previously, just set the current step and
     // return.
@@ -273,38 +289,12 @@ class LockedLlmExecutor : public LlmExecutor {
     std::optional<ExecutorVisionData> new_vision_data = std::nullopt;
     std::optional<ExecutorAudioData> new_audio_data = std::nullopt;
     if (inputs.GetVisionDataPtr().ok()) {
-      new_vision_data = ExecutorVisionData();
-      LITERT_ASSIGN_OR_RETURN(
-          auto new_vision_embeddings,
-          inputs.GetVisionEmbeddingsPtr().value()->Duplicate());
-      new_vision_data->SetEmbeddings(std::move(new_vision_embeddings));
-      if (inputs.GetVisionDataPtr().value()->GetPerLayerEmbeddingsPtr().ok()) {
-        LITERT_ASSIGN_OR_RETURN(auto new_per_layer_embeddings,
-                                inputs.GetVisionDataPtr()
-                                    .value()
-                                    ->GetPerLayerEmbeddingsPtr()
-                                    .value()
-                                    ->Duplicate());
-        new_vision_data->SetPerLayerEmbeddings(
-            std::move(new_per_layer_embeddings));
-      }
+      LITERT_ASSIGN_OR_RETURN(new_vision_data,
+                              (*inputs.GetVisionDataPtr())->Duplicate());
     }
-    if (inputs.GetAudioEmbeddingsPtr().ok()) {
-      new_audio_data = ExecutorAudioData();
-      LITERT_ASSIGN_OR_RETURN(
-          auto new_audio_embeddings,
-          inputs.GetAudioEmbeddingsPtr().value()->Duplicate());
-      new_audio_data->SetEmbeddings(std::move(new_audio_embeddings));
-      if (inputs.GetAudioDataPtr().value()->GetPerLayerEmbeddingsPtr().ok()) {
-        LITERT_ASSIGN_OR_RETURN(auto new_per_layer_embeddings,
-                                inputs.GetAudioDataPtr()
-                                    .value()
-                                    ->GetPerLayerEmbeddingsPtr()
-                                    .value()
-                                    ->Duplicate());
-        new_audio_data->SetPerLayerEmbeddings(
-            std::move(new_per_layer_embeddings));
-      }
+    if (inputs.GetAudioDataPtr().ok()) {
+      LITERT_ASSIGN_OR_RETURN(new_audio_data,
+                              (*inputs.GetAudioDataPtr())->Duplicate());
     }
     auto new_inputs =
         ExecutorInputs(ExecutorTextData(std::move(new_inputs_token_ids)),
@@ -408,6 +398,11 @@ class LockedLlmExecutor : public LlmExecutor {
     return llm_executor_->GetExecutorSettings();
   }
 
+  absl::Status UpdateExecutorSettings(
+      const LlmExecutorSettings& executor_settings) override {
+    return llm_executor_->UpdateExecutorSettings(executor_settings);
+  }
+
   absl::StatusOr<int> GetCurrentStep() const override {
     return llm_executor_->GetCurrentStep();
   }
@@ -418,6 +413,10 @@ class LockedLlmExecutor : public LlmExecutor {
 
   absl::StatusOr<const ProcessedTokens*> GetProcessedTokens() const override {
     return llm_executor_->GetProcessedTokens();
+  }
+
+  absl::StatusOr<std::string> GetProfileSummary() override {
+    return llm_executor_->GetProfileSummary();
   }
 
   absl::Status Reset() override { return llm_executor_->Reset(); }
@@ -895,6 +894,32 @@ ResourceManager::GetVisionExecutorProperties() {
   ABSL_RETURN_IF_ERROR(TryLoadingVisionExecutor());
   absl::MutexLock lock(vision_executor_mutex_);
   return vision_executor_->GetVisionExecutorProperties();
+}
+
+void ResourceManager::ResetCurrentHandler() {
+  absl::MutexLock lock(executor_mutex_);
+  if (llm_executor_ != nullptr) {
+    llm_executor_->Reset().IgnoreError();
+  }
+  current_handler_ = nullptr;
+}
+
+absl::Status ResourceManager::UpdateGpuEnableMetalResidencySet(
+    bool enable_metal_residency_set) {
+  ABSL_ASSIGN_OR_RETURN(auto executor, AcquireExecutor());
+  ABSL_ASSIGN_OR_RETURN(auto executor_settings,
+                        executor->GetExecutorSettings());
+  auto advanced_settings =
+      executor_settings.GetAdvancedSettings().value_or(AdvancedSettings());
+  advanced_settings.gpu_enable_metal_residency_set = enable_metal_residency_set;
+  executor_settings.SetAdvancedSettings(advanced_settings);
+  return executor->UpdateExecutorSettings(executor_settings);
+}
+
+absl::Status ResourceManager::UpdateExecutorSettings(
+    const LlmExecutorSettings& executor_settings) {
+  ABSL_ASSIGN_OR_RETURN(auto executor, AcquireExecutor());
+  return executor->UpdateExecutorSettings(executor_settings);
 }
 
 }  // namespace litert::lm

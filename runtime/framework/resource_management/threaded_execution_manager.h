@@ -32,23 +32,25 @@
 #include "absl/synchronization/mutex.h"  // from @com_google_absl
 #include "absl/time/time.h"  // from @com_google_absl
 #include "litert/cc/litert_environment.h"  // from @litert
-#include "runtime/components/logits_processor/constrained_decoding/constraint.h"
-#include "runtime/components/logits_processor/no_repeat_ngram_config.h"
-#include "runtime/components/logits_processor/repetition_penalty_config.h"
-#include "runtime/components/logits_processor/suppress_tokens_config.h"
+#include "runtime/components/constrained_decoding/constraint.h"
+#include "runtime/components/constrained_decoding/no_repeat_ngram_config.h"
+#include "runtime/components/constrained_decoding/repetition_penalty_config.h"
+#include "runtime/components/constrained_decoding/suppress_tokens_config.h"
 #include "runtime/components/model_resources.h"
 #include "runtime/engine/engine_settings.h"
 #include "runtime/engine/io_types.h"
-#include "runtime/executor/audio_executor.h"
-#include "runtime/executor/audio_executor_settings.h"
+#include "runtime/executor/audio/audio_executor.h"
+#include "runtime/executor/audio/audio_executor_settings.h"
 #include "runtime/executor/llm_executor.h"
 #include "runtime/executor/llm_executor_io_types.h"
-#include "runtime/executor/vision_executor_settings.h"
+#include "runtime/executor/vision/vision_executor_settings.h"
 #include "runtime/framework/resource_management/execution_manager.h"
 #include "runtime/framework/resource_management/resource_manager.h"
 #include "runtime/framework/threadpool.h"
 
 namespace litert::lm {
+
+class RuntimeDebugger;
 
 // The execution manager is responsible for managing the execution of the tasks.
 // It will handle the scheduling of the tasks and the dependencies between them.
@@ -77,7 +79,9 @@ class ThreadedExecutionManager : public ExecutionManager {
       std::unique_ptr<AudioExecutorSettings> absl_nullable
       audio_executor_settings,
       ::litert::Environment* absl_nullable litert_env,
-      std::unique_ptr<AudioExecutor> absl_nullable audio_executor = nullptr);
+      std::unique_ptr<AudioExecutor> absl_nullable audio_executor = nullptr,
+      std::shared_ptr<RuntimeDebugger> absl_nullable runtime_debugger =
+          nullptr);
 
   ~ThreadedExecutionManager() override;
 
@@ -112,6 +116,9 @@ class ThreadedExecutionManager : public ExecutionManager {
   // Releases the session with the given session ID.
   absl::Status ReleaseSession(SessionId session_id) override
       ABSL_LOCKS_EXCLUDED(session_and_task_lookup_mutex_);
+
+  absl::Status UpdateGpuEnableMetalResidencySet(
+      bool enable_metal_residency_set) override;
 
   // Cancels all tasks in the session with the given session ID.
   absl::Status CancelAllTasksInSession(SessionId session_id) override
@@ -246,7 +253,9 @@ class ThreadedExecutionManager : public ExecutionManager {
   ThreadedExecutionManager(
       Tokenizer* absl_nonnull tokenizer,
       std::unique_ptr<ResourceManager> absl_nonnull resource_manager,
-      ::litert::Environment* absl_nullable litert_env = nullptr);
+      ::litert::Environment* absl_nullable litert_env = nullptr,
+      std::shared_ptr<RuntimeDebugger> absl_nullable runtime_debugger =
+          nullptr);
 
   // Creates a task with the given task ID, task, dependent tasks, and callback.
   // - session_id: The ID of the session that created the task.
@@ -365,6 +374,8 @@ class ThreadedExecutionManager : public ExecutionManager {
   std::unique_ptr<ResourceManager> absl_nonnull resource_manager_;
   // LiteRT environment used for creating the sampler.
   ::litert::Environment* absl_nullable litert_env_;
+  // Process-wide debugger telemetry handle (borrowed/unowned).
+  std::shared_ptr<RuntimeDebugger> absl_nullable runtime_debugger_ = nullptr;
   // Thread pool used for executing the tasks.
   std::unique_ptr<ThreadPool> absl_nonnull execution_thread_pool_;
   // Thread pool used for executing the callbacks.

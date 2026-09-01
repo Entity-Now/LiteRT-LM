@@ -15,29 +15,33 @@
 #ifndef THIRD_PARTY_ODML_LITERT_LM_RUNTIME_ENGINE_ENGINE_SETTINGS_H_
 #define THIRD_PARTY_ODML_LITERT_LM_RUNTIME_ENGINE_ENGINE_SETTINGS_H_
 
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <ostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/base/nullability.h"  // from @com_google_absl
+#include "absl/functional/any_invocable.h"  // from @com_google_absl
 #include "absl/status/status.h"  // from @com_google_absl
 #include "absl/status/status_macros.h"  // from @com_google_absl
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
-#include "support/tokenizer/tokenizer.h"  // from @litert
-#include "runtime/components/logits_processor/suppress_tokens_config.h"
-#include "runtime/executor/audio_executor_settings.h"
+#include "runtime/components/constrained_decoding/suppress_tokens_config.h"
+#include "runtime/executor/audio/audio_executor_settings.h"
 #include "runtime/executor/executor_settings_base.h"
+#include "runtime/executor/llm_executor_io_types.h"
 #include "runtime/executor/llm_executor_settings.h"
-#include "runtime/executor/vision_executor_settings.h"
+#include "runtime/executor/vision/vision_executor_settings.h"
 #include "runtime/proto/engine.pb.h"
 #include "runtime/proto/llm_metadata.pb.h"
 #include "runtime/proto/llm_model_type.pb.h"
 #include "runtime/proto/sampler_params.pb.h"
 #include "runtime/util/scoped_file.h"
+#include "support/tokenizer/tokenizer.h"
 
 namespace litert::lm {
 
@@ -147,6 +151,13 @@ class EngineSettings {
   // false.
   void SetSingleThreadedExecution(bool single_threaded_execution);
 
+  // Desired maximum number of vision tokens generated per image. If set,
+  // the engine will automatically select vision encoder (and adapter)
+  // signatures with capacity up to this length and the smallest signature that
+  // fits it.
+  std::optional<int> GetMaxVisionTokensPerImage() const;
+  void SetMaxVisionTokensPerImage(int max_vision_tokens_per_image);
+
  private:
   explicit EngineSettings(
       LlmExecutorSettings executor_settings,
@@ -176,6 +187,9 @@ class EngineSettings {
 
   // Whether the advanced engine should run tasks in a single thread.
   bool single_threaded_execution_ = false;
+
+  // Desired maximum number of vision tokens generated per image.
+  std::optional<int> max_vision_tokens_per_image_;
 };
 std::ostream& operator<<(std::ostream& os, const EngineSettings& settings);
 
@@ -270,11 +284,22 @@ class SessionConfig {
   void SetAudioScopedLoraFile(
       std::shared_ptr<ScopedFile> scoped_audio_lora_file);
 
-  // The maximum number of tokens to generate in a single request:
-  // Getters for the max output tokens.
+  // The maximum number of tokens to generate in a single request. For thinking
+  // models, both thinking (reasoning) tokens and the final response tokens
+  // count towards this limit:
   int GetMaxOutputTokens() const { return max_output_tokens_; }
   void SetMaxOutputTokens(int max_output_tokens) {
     max_output_tokens_ = max_output_tokens;
+  }
+
+  using AudioEmbeddingsCallback =
+      absl::AnyInvocable<void(const ExecutorAudioData&) const>;
+  const AudioEmbeddingsCallback* GetAudioEmbeddingsCallback() const {
+    return audio_embeddings_callback_.get();
+  }
+  void SetAudioEmbeddingsCallback(AudioEmbeddingsCallback callback) {
+    audio_embeddings_callback_ =
+        std::make_shared<AudioEmbeddingsCallback>(std::move(callback));
   }
 
  private:
@@ -339,6 +364,13 @@ class SessionConfig {
   // tokens (input + output) stored in the KV cache over the lifetime of a
   // session.
   int max_output_tokens_ = std::numeric_limits<int>::max();
+
+  // Optional callback to receive audio embeddings. If not set, it will be
+  // nullptr.
+  // We use std::shared_ptr to wrap the move-only absl::AnyInvocable callback.
+  // This allows SessionConfig to remain copy-constructible, which is required
+  // because SessionConfig is copied in various engine and library interfaces.
+  std::shared_ptr<AudioEmbeddingsCallback> audio_embeddings_callback_;
 };
 
 std::ostream& operator<<(std::ostream& os, const SessionConfig& config);

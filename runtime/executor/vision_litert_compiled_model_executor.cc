@@ -24,6 +24,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/algorithm/container.h"  // from @com_google_absl
 #include "absl/base/nullability.h"  // from @com_google_absl
 #include "absl/container/flat_hash_map.h"  // from @com_google_absl
 #include "absl/log/absl_log.h"  // from @com_google_absl
@@ -32,17 +33,17 @@
 #include "absl/status/status_macros.h"  // from @com_google_absl
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/strings/match.h"  // from @com_google_absl
-#include "absl/strings/numbers.h"  // from @com_google_absl
 #include "absl/strings/str_cat.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/types/span.h"  // from @com_google_absl
 #include "litert/cc/litert_common.h"  // from @litert
 #include "litert/cc/litert_element_type.h"  // from @litert
 #include "litert/cc/litert_layout.h"  // from @litert
+#include "litert/cc/litert_model_types.h"  // from @litert
 #include "litert/cc/litert_ranked_tensor_type.h"  // from @litert
 #include "litert/cc/litert_tensor_buffer_types.h"  // from @litert
 #include "runtime/engine/io_types.h"
-#include "runtime/executor/vision_executor_utils.h"
+#include "runtime/executor/vision/vision_executor_utils.h"
 #if !defined(LITERT_DISABLE_NPU)
 #include "litert/cc/options/litert_google_tensor_options.h"  // from @litert
 #include "litert/cc/options/litert_qualcomm_options.h"  // from @litert
@@ -59,18 +60,14 @@
 #include "runtime/executor/executor_settings_base.h"
 #include "runtime/executor/litert_compiled_model_executor_utils.h"
 #include "runtime/executor/llm_executor_io_types.h"
-#include "runtime/executor/vision_executor_settings.h"
+#include "runtime/executor/vision/vision_executor_settings.h"
 #include "runtime/util/convert_tensor_buffer.h"
-#include "runtime/util/file_util.h"
 #include "runtime/util/status_macros.h"  // NOLINT
-#include "tflite/delegates/xnnpack/xnnpack_delegate.h"  // from @litert
 
 namespace litert::lm {
 
 namespace {
 
-// The position input tensor name for ViT encoder.
-constexpr absl::string_view kPositionsXy = "positions_xy";
 // The image patch input tensor name for ViT encoder.
 constexpr absl::string_view kImages = "images";
 // The image patch input tensor name for ViT encoder with multi-signature
@@ -84,43 +81,38 @@ constexpr absl::string_view kMask = "mask";
 // Set the default GPU options for the model.
 absl::Status SetGpuOptions(const VisionExecutorSettings& executor_settings,
                            litert::GpuOptions& gpu_options) {
-#if defined(LITERT_USE_WEBGPU_ACCELERATOR)
-  gpu_options.SetBackend(GpuOptions::Backend::kWebGpu);
-#endif  // defined(LITERT_USE_WEBGPU_ACCELERATOR)
-  gpu_options.EnableConstantTensorSharing(true);
-  if (executor_settings.GetActivationDataType().has_value()) {
-    if (executor_settings.GetActivationDataType().value() ==
-        ActivationDataType::FLOAT32) {
-      gpu_options.SetPrecision(GpuOptions::Precision::kFp32);
-    } else {
-      gpu_options.SetPrecision(GpuOptions::Precision::kFp16);
-    }
-  } else {
-    // Default to fp32 if no activation data type is specified, for backward
-    // compatibility with previous launched models.
-    gpu_options.SetPrecision(GpuOptions::Precision::kFp32);
-  }
-#if defined(__APPLE__)
-  gpu_options.SetPreferTextureWeights(false);
-  gpu_options.SetUseMetalArgumentBuffers(true);
-#else   // !__APPLE__
-  gpu_options.SetPreferTextureWeights(true);
-#endif  // !__APPLE__
-  gpu_options.SetMadviseOriginalSharedTensors(true);
-  gpu_options.SetConvertWeightsOnGpu(true);
-  return absl::OkStatus();
+  return ::litert::lm::SetCommonGpuOptions(executor_settings, gpu_options);
 }
 
 // Set the default CPU options for the model.
 absl::Status SetCpuOptions(const VisionExecutorSettings& executor_settings,
                            litert::CpuOptions& cpu_options) {
-  // Set the number of threads to 4 by default.
-  cpu_options.SetNumThreads(4);
-  auto default_xnn_options = TfLiteXNNPackDelegateOptionsDefault();
-  cpu_options.SetXNNPackFlags(
-      default_xnn_options.flags |
-      TFLITE_XNNPACK_DELEGATE_FLAG_DYNAMIC_FULLY_CONNECTED);
-  return absl::OkStatus();
+  return ::litert::lm::SetCpuOptions(cpu_options, 4);
+}
+
+// Extracts the visual token length / capacity from the signature's output
+// tensor dimensions.
+absl::StatusOr<int> GetSignatureTokenLength(
+    const ::litert::SimpleSignature& signature) {
+  std::optional<::litert::RankedTensorType> output_tensor_type;
+  auto features_output = signature.OutputTensorType(kFeatures);
+  if (features_output.HasValue()) {
+    output_tensor_type = features_output.Value();
+  } else if (!signature.OutputNames().empty()) {
+    LITERT_ASSIGN_OR_RETURN(output_tensor_type, signature.OutputTensorType(0));
+  }
+
+  if (output_tensor_type.has_value()) {
+    const auto& dims = output_tensor_type->Layout().Dimensions();
+    if (dims.size() >= 2 && dims[dims.size() - 2] > 0) {
+      return dims[dims.size() - 2];
+    }
+  }
+
+  return absl::InvalidArgumentError(absl::StrCat(
+      "Failed to determine token length from output tensor dimensions for "
+      "signature: ",
+      signature.Key()));
 }
 
 // Returns the index of the signature that should be used for the given number
@@ -137,9 +129,10 @@ absl::Status SetCpuOptions(const VisionExecutorSettings& executor_settings,
 //   The index of the signature that should be used for the given number of
 //   patches, or an error status if failed.
 absl::StatusOr<int> GetVitSignatureIndex(
-    const Model& model,
+    const ::litert::Model& model,
     const VisionExecutorProperties& vision_executor_properties,
-    const int num_patches) {
+    const int num_patches,
+    const std::vector<std::string>& selected_signatures) {
   if (model.GetNumSignatures() == 1) {
     return 0;
   }
@@ -157,18 +150,15 @@ absl::StatusOr<int> GetVitSignatureIndex(
       num_patches / vision_executor_properties.patch_num_shrink_factor.value();
 
   for (int i = 0; i < model.GetNumSignatures(); ++i) {
-    LITERT_ASSIGN_OR_RETURN(auto signature_name, model.GetSignature(i));
-    if (absl::StartsWith(signature_name.Key(), kVisionLengthPrefix)) {
-      found_any_signature = true;
-      int current_length = 0;
-      size_t last_underscore = signature_name.Key().find_last_of('_');
-      if (last_underscore == absl::string_view::npos ||
-          !absl::SimpleAtoi(signature_name.Key().substr(last_underscore + 1),
-                            &current_length)) {
-        return absl::InvalidArgumentError(
-            absl::StrCat("Failed to parse signature name ",
-                         signature_name.Key(), " to integer."));
+    LITERT_ASSIGN_OR_RETURN(auto signature, model.GetSignature(i));
+    if (absl::StartsWith(signature.Key(), kVisionLengthPrefix)) {
+      if (!selected_signatures.empty() &&
+          !absl::c_linear_search(selected_signatures, signature.Key())) {
+        continue;
       }
+      found_any_signature = true;
+      LITERT_ASSIGN_OR_RETURN(int current_length,
+                              GetSignatureTokenLength(signature));
 
       max_available_length = std::max(max_available_length, current_length);
 
@@ -184,8 +174,8 @@ absl::StatusOr<int> GetVitSignatureIndex(
   }
 
   if (!found_any_signature) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("No signature found with prefix ", kVisionLengthPrefix));
+    return absl::InvalidArgumentError(absl::StrCat(
+        "No matching signature found with prefix ", kVisionLengthPrefix));
   }
 
   return absl::InvalidArgumentError(
@@ -203,14 +193,16 @@ absl::StatusOr<
 VisionLiteRtCompiledModelExecutor::VisionEncoder::Create(
     Environment& env, const Model* absl_nonnull model,
     const VisionExecutorSettings& vision_executor_settings,
-    const VisionExecutorProperties& vision_executor_properties) {
+    const VisionExecutorProperties& vision_executor_properties,
+    ModelResources& resources) {
   auto handler = std::unique_ptr<VisionEncoder>(new VisionEncoder(
       env, model, vision_executor_settings, vision_executor_properties));
-  ABSL_RETURN_IF_ERROR(handler->Initialize());
+  ABSL_RETURN_IF_ERROR(handler->Initialize(resources));
   return handler;
 }
 
-absl::Status VisionLiteRtCompiledModelExecutor::VisionEncoder::Initialize() {
+absl::Status VisionLiteRtCompiledModelExecutor::VisionEncoder::Initialize(
+    ModelResources& resources) {
   // TODO(b/405424188): - Add support for NPU backends.
   LITERT_ASSIGN_OR_RETURN(auto options, Options::Create());
   auto weight_cache_file = vision_executor_settings_.GetWeightCacheFile(
@@ -273,11 +265,30 @@ absl::Status VisionLiteRtCompiledModelExecutor::VisionEncoder::Initialize() {
       return absl::InvalidArgumentError(
           absl::StrCat("Unsupported encoder backend: ", backend_));
   }
+  ABSL_RETURN_IF_ERROR(SetExternalWeightOptions(
+      resources, ModelType::kTfLiteVisionEncoder, options));
+
+  if (!vision_executor_settings_.GetEncoderSelectedSignatures().empty()) {
+    std::vector<absl::string_view> selected_signatures;
+    selected_signatures.reserve(
+        vision_executor_settings_.GetEncoderSelectedSignatures().size());
+    for (const auto& sig :
+         vision_executor_settings_.GetEncoderSelectedSignatures()) {
+      selected_signatures.push_back(sig);
+    }
+    LITERT_ASSIGN_OR_RETURN(auto& runtime_options, options.GetRuntimeOptions());
+    LITERT_RETURN_IF_ERROR(
+        runtime_options.SetSelectedSignatures(selected_signatures));
+  }
 
   LITERT_ASSIGN_OR_RETURN(compiled_model_,
                           CompiledModel::Create(env_, model_.Get(), options));
-  if (!vision_executor_properties_.patch_num_shrink_factor.has_value()) {
-    // Only create input buffer at initialization for non-VIT models.
+  if (model_.GetNumSignatures() == 1) {
+    // A single signature encoder(non-ViT model + single input LFM2-VL)
+    // uses a single buffer encode path, so buffers must be created in advance,
+    // but multi-signature(ViT) encoders create buffers for each signature
+    // in map-based encode at that time, so signature 0 buffers should not
+    // be created in advance.
     LITERT_ASSIGN_OR_RETURN(input_buffers_,
                             compiled_model_.CreateInputBuffers(0));
     LITERT_ASSIGN_OR_RETURN(output_buffers_,
@@ -291,14 +302,16 @@ absl::StatusOr<
 VisionLiteRtCompiledModelExecutor::VisionAdapter::Create(
     Environment& env, const Model* absl_nonnull model,
     const VisionExecutorSettings& vision_executor_settings,
-    const VisionExecutorProperties& vision_executor_properties) {
+    const VisionExecutorProperties& vision_executor_properties,
+    ModelResources& resources) {
   auto handler = std::unique_ptr<VisionAdapter>(new VisionAdapter(
       env, model, vision_executor_settings, vision_executor_properties));
-  ABSL_RETURN_IF_ERROR(handler->Initialize());
+  ABSL_RETURN_IF_ERROR(handler->Initialize(resources));
   return handler;
 }
 
-absl::Status VisionLiteRtCompiledModelExecutor::VisionAdapter::Initialize() {
+absl::Status VisionLiteRtCompiledModelExecutor::VisionAdapter::Initialize(
+    ModelResources& resources) {
   // TODO(b/405424188): - Add support for NPU backends.
   LITERT_ASSIGN_OR_RETURN(auto options, Options::Create());
   auto weight_cache_file = vision_executor_settings_.GetWeightCacheFile(
@@ -353,25 +366,38 @@ absl::Status VisionLiteRtCompiledModelExecutor::VisionAdapter::Initialize() {
       return absl::InvalidArgumentError(
           absl::StrCat("Unsupported adapter backend: ", backend_));
   }
+  ABSL_RETURN_IF_ERROR(SetExternalWeightOptions(
+      resources, ModelType::kTfLiteVisionAdapter, options));
+
+  if (!vision_executor_settings_.GetAdapterSelectedSignatures().empty()) {
+    std::vector<absl::string_view> adapter_selected_signatures;
+    adapter_selected_signatures.reserve(
+        vision_executor_settings_.GetAdapterSelectedSignatures().size());
+    for (const auto& sig :
+         vision_executor_settings_.GetAdapterSelectedSignatures()) {
+      adapter_selected_signatures.push_back(sig);
+    }
+    LITERT_ASSIGN_OR_RETURN(auto& runtime_options, options.GetRuntimeOptions());
+    LITERT_RETURN_IF_ERROR(
+        runtime_options.SetSelectedSignatures(adapter_selected_signatures));
+  }
 
   LITERT_ASSIGN_OR_RETURN(compiled_model_,
                           CompiledModel::Create(env_, model_.Get(), options));
-  // This check verifies if signature 0 of the adapter model contains any
-  // inputs. This is used to infer whether input buffers should be created at
-  // initialization time (for single-signature models that use signature 0 by
-  // default) or skipped (for multi-signature models like ViT that create
-  // input buffers on-demand in `Encode` for a specific signature). This is a
-  // more direct check than relying on `patch_num_shrink_factor` which was
-  // previously used to detect multi-signature models.
-  auto signature_or = model_.GetSignature(0);
-  if (signature_or.HasValue() && !signature_or->InputNames().empty()) {
-    LITERT_ASSIGN_OR_RETURN(input_buffers_,
-                            compiled_model_.CreateInputBuffers(0));
-    if (input_buffers_.size() != 1) {
-      return absl::InvalidArgumentError(
-          absl::StrCat("The Vision Adapter model must have exactly one input "
-                       "buffer but got ",
-                       input_buffers_.size()));
+  // For single-signature models that use signature 0 by default, create
+  // input buffers at initialization time. For multi-signature models like ViT,
+  // input buffers are created on-demand in `Encode` for the selected signature.
+  if (model_.GetNumSignatures() == 1) {
+    auto signature = model_.GetSignature(0);
+    if (signature.HasValue() && !signature->InputNames().empty()) {
+      LITERT_ASSIGN_OR_RETURN(input_buffers_,
+                              compiled_model_.CreateInputBuffers(0));
+      if (input_buffers_.size() != 1) {
+        return absl::InvalidArgumentError(
+            absl::StrCat("The Vision Adapter model must have exactly one input "
+                         "buffer but got ",
+                         input_buffers_.size()));
+      }
     }
   }
 
@@ -405,14 +431,15 @@ litert::lm::VisionLiteRtCompiledModelExecutor::Create(
   ABSL_ASSIGN_OR_RETURN(
       auto vision_encoder,
       VisionEncoder::Create(env, vision_encoder_model, vision_executor_settings,
-                            vision_executor_properties));
+                            vision_executor_properties, *resources));
 
   std::unique_ptr<VisionAdapter> vision_adapter;
   if (vision_adapter_model.ok()) {
-    ABSL_ASSIGN_OR_RETURN(vision_adapter,
-                          VisionAdapter::Create(env, *vision_adapter_model,
-                                                vision_executor_settings,
-                                                vision_executor_properties));
+    ABSL_ASSIGN_OR_RETURN(
+        vision_adapter,
+        VisionAdapter::Create(env, *vision_adapter_model,
+                              vision_executor_settings,
+                              vision_executor_properties, *resources));
   }
 
   LITERT_ASSIGN_OR_RETURN(auto tensor_type,
@@ -498,10 +525,10 @@ VisionLiteRtCompiledModelExecutor::GetExpectedInputDimension() const {
 absl::StatusOr<ExecutorVisionData> VisionLiteRtCompiledModelExecutor::Encode(
     const absl::flat_hash_map<std::string, litert::TensorBuffer>& input_maps) {
 
-  if (!input_maps.contains(kPositionsXy)) {
-    return absl::InvalidArgumentError(
-        absl::StrCat(kPositionsXy, " is not found in the input maps."));
-  }
+  // Note: `positions_xy` is only required by transformer (ViT) encoders. Single
+  // input encoders (e.g. LFM2 VL) do not provide it, so we only validate the
+  // mandatory `images` tensor here and feed whatever inputs the caller provides
+  // to the matching encoder signature below.
   if (!input_maps.contains(kImages)) {
     return absl::InvalidArgumentError(
         absl::StrCat(kImages, " is not found in the input maps."));
@@ -513,17 +540,22 @@ absl::StatusOr<ExecutorVisionData> VisionLiteRtCompiledModelExecutor::Encode(
                           input_maps.at(kImages).TensorType());
   const auto& images_dimensions = images_tensor_type.Layout().Dimensions();
   const int num_patches_from_input = images_dimensions[1];
-  ABSL_ASSIGN_OR_RETURN(auto encoder_signature_index,
-                        GetVitSignatureIndex(vision_encoder_->GetModel(),
-                                             vision_executor_properties_,
-                                             num_patches_from_input));
+  ABSL_ASSIGN_OR_RETURN(
+      auto encoder_signature_index,
+      GetVitSignatureIndex(
+          vision_encoder_->GetModel(), vision_executor_properties_,
+          num_patches_from_input,
+          vision_executor_settings_.GetEncoderSelectedSignatures()));
   std::optional<int> adapter_signature_index;
   if (vision_adapter_ != nullptr) {
-    ABSL_ASSIGN_OR_RETURN(adapter_signature_index,
-                          GetVitSignatureIndex(vision_adapter_->GetModel(),
-                                               vision_executor_properties_,
-                                               num_patches_from_input));
+    ABSL_ASSIGN_OR_RETURN(
+        adapter_signature_index,
+        GetVitSignatureIndex(
+            vision_adapter_->GetModel(), vision_executor_properties_,
+            num_patches_from_input,
+            vision_executor_settings_.GetAdapterSelectedSignatures()));
   }
+
   LITERT_ASSIGN_OR_RETURN(
       auto encoder_input_buffers,
       vision_encoder_->GetCompiledModel().CreateInputBuffers(
@@ -532,14 +564,14 @@ absl::StatusOr<ExecutorVisionData> VisionLiteRtCompiledModelExecutor::Encode(
   LITERT_ASSIGN_OR_RETURN(
       auto encoder_signature,
       vision_encoder_->GetModel().GetSignature(encoder_signature_index));
-  ABSL_LOG(INFO) << "encoder_signature_index: " << encoder_signature_index
-                 << " name: " << encoder_signature.Key();
+  ABSL_VLOG(1) << "encoder_signature_index: " << encoder_signature_index
+               << " name: " << encoder_signature.Key();
   if (vision_adapter_ != nullptr) {
     LITERT_ASSIGN_OR_RETURN(
         auto adapter_signature,
         vision_adapter_->GetModel().GetSignature(*adapter_signature_index));
-    ABSL_LOG(INFO) << "adapter_signature_index: " << *adapter_signature_index
-                   << " name: " << adapter_signature.Key();
+    ABSL_VLOG(1) << "adapter_signature_index: " << *adapter_signature_index
+                 << " name: " << adapter_signature.Key();
   }
 
   std::vector<TensorBuffer> adapter_output_tensor_buffers;
@@ -620,11 +652,13 @@ absl::StatusOr<ExecutorVisionData> VisionLiteRtCompiledModelExecutor::Encode(
           "patch_num_shrink_factor is not set in the vision executor "
           "properties.");
     }
-    LITERT_ASSIGN_OR_RETURN(auto positions_tensor_type,
-                            input_maps.at(kPositionsXy).TensorType());
-    const int& num_patches_from_input =
-        positions_tensor_type.Layout().Dimensions()[1];
-    const int& patch_num_shrink_factor =
+    // Derive the number of input patches from the image tensor. The positions
+    // tensor is not available for single input encoders (e.g. LFM2 VL).
+    LITERT_ASSIGN_OR_RETURN(auto image_tensor_type,
+                            input_maps.at(kImages).TensorType());
+    const int num_patches_from_input =
+        image_tensor_type.Layout().Dimensions()[1];
+    const int patch_num_shrink_factor =
         vision_executor_properties_.patch_num_shrink_factor.value();
     // Round up the number of patches so we have at least one patch.
     num_patches = (num_patches_from_input + patch_num_shrink_factor - 1) /
@@ -673,11 +707,18 @@ absl::StatusOr<ExecutorVisionData> VisionLiteRtCompiledModelExecutor::Encode(
 
     LITERT_ASSIGN_OR_RETURN(auto adapter_output_tensor_type,
                             adapter_output_tensor_buffers[0].TensorType());
+
+    // The embedding size is the last dimension of the adapter output,
+    // regardless of whether the adapter produces a 2-D ([num_tokens,
+    // embedding_size]) or 3-D ([batch_size, num_tokens, embedding_size])
+    // tensor.
+    const auto& adapter_output_dimensions =
+        adapter_output_tensor_type.Layout().Dimensions();
+    const int adapter_output_embedding_size =
+        adapter_output_dimensions[adapter_output_dimensions.size() - 1];
     RankedTensorType output_tensor_type(
         GetElementType<float>(),
-        Layout(
-            Dimensions({1, num_patches,
-                        adapter_output_tensor_type.Layout().Dimensions()[2]})));
+        Layout(Dimensions({1, num_patches, adapter_output_embedding_size})));
     LITERT_ASSIGN_OR_RETURN(
         auto output_tensor,
         TensorBuffer::CreateManaged(

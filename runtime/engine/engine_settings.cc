@@ -32,13 +32,12 @@
 #include "absl/strings/str_cat.h"  // from @com_google_absl
 #include "absl/strings/str_split.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
-#include "support/tokenizer/tokenizer.h"  // from @litert
-#include "runtime/components/logits_processor/suppress_tokens_config.h"
+#include "runtime/components/constrained_decoding/suppress_tokens_config.h"
 #include "runtime/components/model_resources.h"
-#include "runtime/executor/audio_executor_settings.h"
+#include "runtime/executor/audio/audio_executor_settings.h"
 #include "runtime/executor/executor_settings_base.h"
 #include "runtime/executor/llm_executor_settings.h"
-#include "runtime/executor/vision_executor_settings.h"
+#include "runtime/executor/vision/vision_executor_settings.h"
 #include "runtime/proto/engine.pb.h"
 #include "runtime/proto/llm_metadata.pb.h"
 #include "runtime/proto/llm_model_type.pb.h"
@@ -49,6 +48,7 @@
 #include "runtime/util/scoped_file.h"
 #include "runtime/util/status_macros.h"  // IWYU pragma: keep
 #include "schema/core/litertlm_header_schema_generated.h"
+#include "support/tokenizer/tokenizer.h"
 
 namespace litert::lm {
 namespace {
@@ -97,11 +97,11 @@ absl::Status ValidateBackendConstraint(
                        backend_constraint_str, "] but ", modality_name,
                        " backend is ", backend));
     }
-    ABSL_LOG(INFO) << "The " << modality_name
-                   << " backend constraint is matched: " << backend;
+    ABSL_VLOG(1) << "The " << modality_name
+                 << " backend constraint is matched: " << backend;
   } else {
-    ABSL_LOG(INFO) << "The " << modality_name
-                   << " backend constraint is not set.";
+    ABSL_VLOG(1) << "The " << modality_name
+                 << " backend constraint is not set.";
   }
   return absl::OkStatus();
 }
@@ -188,8 +188,8 @@ absl::StatusOr<EngineSettings> EngineSettings::CreateDefault(
     }
 
     if (is_text_artisan) {
-      ABSL_LOG(INFO) << "Artisan model detected. Switching backend from GPU to "
-                        "GPU_ARTISAN.";
+      ABSL_VLOG(1) << "Artisan model detected. Switching backend from GPU to "
+                      "GPU_ARTISAN.";
       backend = Backend::GPU_ARTISAN;
       if (audio_backend.has_value() && audio_backend.value() == Backend::GPU) {
         audio_backend = Backend::GPU_ARTISAN;
@@ -290,6 +290,7 @@ absl::Status EngineSettings::MaybeUpdateAndValidate(
     }
   }
 
+  const Backend& backend = main_executor_settings_.GetBackend();
   // Load the max num tokens from the model file.
   // If not set, we set the default value to one based on the number of tokens
   // in the prompt.
@@ -300,8 +301,46 @@ absl::Status EngineSettings::MaybeUpdateAndValidate(
     int max_num_tokens = ((num_prompt_tokens + 1023) / 4096 + 1) * 4096;
     if (metadata.max_num_tokens() > 0) {
       max_num_tokens = metadata.max_num_tokens();
+#if !defined(__APPLE__)
+      // Metal does not constraint the max allocated GPU buffer size.
+      if (backend == Backend::GPU && max_num_tokens > 4096) {
+        max_num_tokens = ((num_prompt_tokens + 1023) / 4096 + 1) * 4096;
+      }
+#endif  // !__APPLE__
     }
     main_executor_settings_.SetMaxNumTokens(max_num_tokens);
+  }
+
+  if (main_executor_settings_.GetPadTokenId() == -1 &&
+      metadata.has_pad_token()) {
+    if (metadata.pad_token().has_token_str()) {
+      if (tokenizer != nullptr) {
+        auto pad_token_id =
+            tokenizer->TokenToId(metadata.pad_token().token_str());
+        if (pad_token_id.ok()) {
+          main_executor_settings_.SetPadTokenId(*pad_token_id);
+        } else {
+          auto pad_token_ids =
+              tokenizer->TextToTokenIds(metadata.pad_token().token_str());
+          if (pad_token_ids.ok()) {
+            if (pad_token_ids->size() != 1) {
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "Pad token should only contain a single token ID, but got ",
+                  pad_token_ids->size()));
+            }
+            main_executor_settings_.SetPadTokenId((*pad_token_ids)[0]);
+          }
+        }
+      }
+    } else if (metadata.pad_token().token_ids().ids_size() > 0) {
+      if (metadata.pad_token().token_ids().ids_size() != 1) {
+        return absl::InvalidArgumentError(absl::StrCat(
+            "Pad token should only contain a single token ID, but got ",
+            metadata.pad_token().token_ids().ids_size()));
+      }
+      main_executor_settings_.SetPadTokenId(
+          metadata.pad_token().token_ids().ids(0));
+    }
   }
 
   // By default, the audio executor is configured to use the same max num
@@ -327,7 +366,6 @@ absl::Status EngineSettings::MaybeUpdateAndValidate(
   }
 
   // Set the default values for the sampler params.
-  Backend backend = main_executor_settings_.GetBackend();
   if (!metadata.has_sampler_params()) {
     proto::SamplerParameters& sampler_params =
         *metadata.mutable_sampler_params();
@@ -440,7 +478,7 @@ absl::Status EngineSettings::MaybeUpdateAndValidate(
   }
 
   ABSL_VLOG(5) << "The llm metadata: " << metadata.DebugString();
-  ABSL_LOG(INFO) << "The validated engine settings: " << *this;
+  ABSL_VLOG(1) << "The validated engine settings: " << *this;
   return absl::OkStatus();
 }
 
@@ -531,11 +569,24 @@ std::ostream& operator<<(std::ostream& os, const EngineSettings& settings) {
   } else {
     os << "  AudioExecutorSettings: Not set" << std::endl;
   }
+  if (settings.GetMaxVisionTokensPerImage().has_value()) {
+    os << "  MaxVisionTokensPerImage: "
+       << settings.GetMaxVisionTokensPerImage().value() << std::endl;
+  }
   os << "  ParallelFileSectionLoading: "
      << settings.GetParallelFileSectionLoading() << std::endl;
   os << "  SingleThreadedExecution: " << settings.GetSingleThreadedExecution()
      << std::endl;
   return os;
+}
+
+std::optional<int> EngineSettings::GetMaxVisionTokensPerImage() const {
+  return max_vision_tokens_per_image_;
+}
+
+void EngineSettings::SetMaxVisionTokensPerImage(
+    int max_vision_tokens_per_image) {
+  max_vision_tokens_per_image_ = max_vision_tokens_per_image;
 }
 
 proto::LlmMetadata& EngineSettings::GetMutableLlmMetadata() {
@@ -792,6 +843,10 @@ std::ostream& operator<<(std::ostream& os, const SessionConfig& config) {
      << std::endl;
   os << "  ScopedAudioLoraFile: "
      << (config.GetAudioScopedLoraFile() != nullptr ? "Present" : "Not present")
+     << std::endl;
+  os << "  AudioEmbeddingsCallback: "
+     << (config.GetAudioEmbeddingsCallback() != nullptr ? "Present"
+                                                        : "Not present")
      << std::endl;
   return os;
 }

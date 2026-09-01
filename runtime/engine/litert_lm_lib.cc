@@ -54,9 +54,9 @@
 #include "absl/time/time.h"  // from @com_google_absl
 #include "nlohmann/json.hpp"  // from @nlohmann_json
 #include "litert/cc/internal/scoped_file.h"  // from @litert
-#include "runtime/components/logits_processor/constrained_decoding/constraint.h"
-#include "runtime/components/logits_processor/constrained_decoding/constraint_provider_factory.h"
-#include "runtime/components/logits_processor/constrained_decoding/llg_constraint_config.h"
+#include "runtime/components/constrained_decoding/constraint.h"
+#include "runtime/components/constrained_decoding/constraint_provider_factory.h"
+#include "runtime/components/constrained_decoding/llg_constraint_config.h"
 #include "runtime/conversation/conversation.h"
 #include "runtime/conversation/io_types.h"
 #include "runtime/conversation/model_data_processor/gemma4_data_processor_config.h"
@@ -115,7 +115,7 @@ absl::StatusOr<ModelAssets> CreateModelAssets(
   if (settings.model_path.empty()) {
     return absl::InvalidArgumentError("Model path is empty.");
   }
-  ABSL_LOG(INFO) << "Model path: " << settings.model_path;
+  ABSL_VLOG(1) << "Model path: " << settings.model_path;
   if (!settings.load_model_from_descriptor) {
     return ModelAssets::Create(settings.model_path);
   }
@@ -171,7 +171,7 @@ absl::Status CheckExpectedOutput(const std::string& captured_output,
   // Skip printing the output when using fake prefill tokens.
   bool should_print_output = settings.benchmark_prefill_tokens == 0;
   if (should_print_output) {
-    ABSL_LOG(INFO) << "Captured model output: " << captured_output;
+    ABSL_VLOG(1) << "Captured model output: " << captured_output;
   }
   if (settings.expected_output.has_value()) {
     if (!absl::StrContainsIgnoreCase(captured_output,
@@ -205,6 +205,9 @@ absl::StatusOr<Message> RunSingleTurnConversation(
   if (settings.repetition_penalty_config.enabled()) {
     optional_args.repetition_penalty_config =
         settings.repetition_penalty_config;
+  }
+  if (settings.no_repeat_ngram_config.enabled()) {
+    optional_args.no_repeat_ngram_config = settings.no_repeat_ngram_config;
   }
   if (settings.suppress_tokens_config.enabled()) {
     optional_args.suppress_tokens_config = settings.suppress_tokens_config;
@@ -276,6 +279,9 @@ absl::Status RunMultiTurnConversation(const LiteRtLmSettings& settings,
       optional_args.repetition_penalty_config =
           settings.repetition_penalty_config;
     }
+    if (settings.no_repeat_ngram_config.enabled()) {
+      optional_args.no_repeat_ngram_config = settings.no_repeat_ngram_config;
+    }
     if (settings.suppress_tokens_config.enabled()) {
       optional_args.suppress_tokens_config = settings.suppress_tokens_config;
     }
@@ -319,7 +325,7 @@ absl::Status RunSingleTurnSession(const std::string& input_prompt,
         "Async mode is not supported for single turn session.");
   }
 
-  ABSL_LOG(INFO) << "Running single turn session with prompt: " << input_prompt;
+  ABSL_VLOG(1) << "Running single turn session with prompt: " << input_prompt;
   DecodeConfig decode_config = DecodeConfig::CreateDefault();
   if (settings.repetition_penalty_config.enabled()) {
     decode_config.SetRepetitionPenaltyConfig(
@@ -352,7 +358,7 @@ absl::Status RunSingleTurnSession(const std::string& input_prompt,
   for (const auto& response : responses.GetTexts()) {
     captured_output << response << std::endl << std::flush;
   }
-  ABSL_LOG(INFO) << "output: " << captured_output.str();
+  std::cout << "output: " << captured_output.str();
   ABSL_RETURN_IF_ERROR(CheckExpectedOutput(captured_output.str(), settings));
   return absl::OkStatus();
 }
@@ -373,7 +379,7 @@ absl::StatusOr<std::vector<litert::lm::ScorerOutput>> RunScoreText(
     ABSL_LOG(WARNING) << "No score found.";
   } else {
     // Multiply by -1 to get the negative log likelihood.
-    ABSL_LOG(INFO) << "Score: " << -1 * (scores[0]) << std::endl;
+    ABSL_VLOG(1) << "Score: " << -1 * (scores[0]) << std::endl;
   }
   if (scores.size() != target_text_vector.size()) {
     return absl::InternalError(absl::StrCat("Scores size ", scores.size(),
@@ -409,31 +415,49 @@ absl::StatusOr<std::vector<litert::lm::ScorerOutput>> RunScoreText(
 void LogBenchmarkInfo(const litert::lm::BenchmarkInfo& benchmark_info,
                       const LiteRtLmSettings& settings) {
   if (!settings.log_sink_file.has_value()) {
-    ABSL_LOG(INFO) << benchmark_info;
+    std::stringstream ss;
+    ss << benchmark_info;
+    std::string line;
+    while (std::getline(ss, line)) {
+      ABSL_LOG(INFO).NoPrefix() << line;
+    }
   } else {
-    std::string model_name_flag = "";
+    std::string extra_flags = "";
     if (settings.model_name.has_value() && !settings.model_name->empty()) {
-      model_name_flag = absl::StrFormat(",model_name=%s", *settings.model_name);
+      absl::StrAppend(&extra_flags, ",model_name=", *settings.model_name);
+    }
+    if (settings.vision_backend.has_value() &&
+        !settings.vision_backend->empty()) {
+      absl::StrAppend(&extra_flags,
+                      ",vision_backend=", *settings.vision_backend);
+    }
+    if (settings.audio_backend.has_value() &&
+        !settings.audio_backend->empty()) {
+      absl::StrAppend(&extra_flags, ",audio_backend=", *settings.audio_backend);
     }
     ABSL_LOG(INFO) << absl::StrFormat(
         "Benchmark flags: "
         "benchmark_prefill_tokens=%d,benchmark_decode_tokens=%d,backend=%s%s",
         benchmark_info.GetBenchmarkParams().num_prefill_tokens(),
         benchmark_info.GetBenchmarkParams().num_decode_tokens(),
-        settings.backend, model_name_flag);
+        settings.backend, extra_flags);
     for (const auto& phase : benchmark_info.GetInitPhases()) {
       ABSL_LOG(INFO) << absl::StrFormat(
           "%s: %.2f ms", phase.first, absl::ToDoubleMilliseconds(phase.second));
+    }
+    for (const auto& mark : benchmark_info.GetMarkDurations()) {
+      ABSL_LOG(INFO) << absl::StrFormat(
+          "%s: %.2f ms", mark.first, absl::ToDoubleMilliseconds(mark.second));
     }
     ABSL_LOG(INFO) << absl::StrFormat("Time to first token: %.2f s",
                                       benchmark_info.GetTimeToFirstToken());
     for (int i = 0; i < benchmark_info.GetTotalPrefillTurns(); ++i) {
       ABSL_LOG(INFO) << absl::StrFormat(
           "Prefill speed turn %d: %.2f tk/s", i,
-          benchmark_info.GetPrefillTokensPerSec(0));
+          benchmark_info.GetPrefillTokensPerSec(i));
       ABSL_LOG(INFO) << absl::StrFormat(
           "Decode speed turn %d: %.2f tk/s", i,
-          benchmark_info.GetDecodeTokensPerSec(0));
+          benchmark_info.GetDecodeTokensPerSec(i));
     }
   }
 }
@@ -496,6 +520,9 @@ absl::StatusOr<EngineSettings> CreateEngineSettings(
     engine_settings.GetMutableMainExecutorSettings().SetMaxNumTokens(
         settings.max_num_tokens);
   }
+  if (settings.visual_token_budget > 0) {
+    engine_settings.SetMaxVisionTokensPerImage(settings.visual_token_budget);
+  }
   if (settings.force_f32) {
     engine_settings.GetMutableMainExecutorSettings().SetActivationDataType(
         litert::lm::ActivationDataType::FLOAT32);
@@ -549,6 +576,7 @@ absl::StatusOr<EngineSettings> CreateEngineSettings(
     if (settings.num_cpu_threads > 0) {
       cpu_settings.number_of_threads = settings.num_cpu_threads;
     }
+    cpu_settings.enable_ynnpack = settings.enable_ynnpack;
     cpu_settings.prefill_chunk_size = settings.prefill_chunk_size;
     executor_settings.SetBackendConfig(cpu_settings);
   }
@@ -599,7 +627,9 @@ absl::StatusOr<EngineSettings> CreateEngineSettings(
           static_cast<uint32_t>(settings.num_logits_to_print_after_decode),
       .gpu_madvise_original_shared_tensors =
           settings.gpu_madvise_original_shared_tensors,
+      .gpu_enable_metal_residency_set = settings.gpu_enable_metal_residency_set,
       .is_benchmark = settings.benchmark,
+      .enable_profiling = settings.enable_profiling,
       .preferred_device_substr = settings.preferred_device_substr,
       .num_threads_to_upload = settings.num_threads_to_upload,
       .num_threads_to_compile = settings.num_threads_to_compile,
@@ -649,6 +679,8 @@ absl::StatusOr<EngineSettings> CreateEngineSettings(
     benchmark_params.set_num_prefill_tokens(settings.benchmark_prefill_tokens);
     benchmark_params.set_num_decode_tokens(settings.benchmark_decode_tokens);
     engine_settings.GetMutableBenchmarkParams() = benchmark_params;
+    // Set the single threaded execution for benchmarking.
+    engine_settings.SetSingleThreadedExecution(true);
   }
 
   return engine_settings;
@@ -657,9 +689,12 @@ absl::StatusOr<EngineSettings> CreateEngineSettings(
 absl::StatusOr<std::unique_ptr<litert::lm::Engine>> CreateEngine(
     const LiteRtLmSettings& settings, const EngineSettings& engine_settings) {
   ABSL_LOG(INFO) << "Creating engine";
+  absl::string_view input_prompt_as_hint =
+      (settings.disable_input_prompt_as_hint) ? absl::string_view()
+                                              : settings.input_prompt;
   ABSL_ASSIGN_OR_RETURN(auto engine,
                         litert::lm::EngineFactory::CreateDefault(
-                            std::move(engine_settings), settings.input_prompt));
+                            std::move(engine_settings), input_prompt_as_hint));
   if (settings.vision_backend.has_value()) {
     ABSL_ASSIGN_OR_RETURN(auto vision_executor_properties,
                           engine->GetVisionExecutorProperties());

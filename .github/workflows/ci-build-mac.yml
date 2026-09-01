@@ -54,6 +54,9 @@ jobs:
         with:
           lfs: true
 
+      - name: Install pytest
+        run: python3 -m pip install --break-system-packages pytest==8.3.4
+
       - name : Set up cache keys.
         id: cache-keys
         run: |
@@ -101,9 +104,13 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           mkdir -p ./models
-          echo "Downloading model from Hugging Face..."
-          curl -L --retry 5 -f \
-            -H "Authorization: Bearer $HF_TOKEN" \
+          if [ -z "$HF_TOKEN" ]; then
+            echo "Warning: HF_TOKEN is empty (unauthenticated external PR or missing secret). Skipping gated model download on macOS..."
+            exit 0
+          fi
+          echo "Downloading model across Hugging Face..."
+          curl --http1.1 -L -C - --retry 5 --retry-delay 3 --retry-all-errors -f \
+            --oauth2-bearer "$HF_TOKEN" \
             -o ${{ env.MODEL_PATH }} \
             "${{ env.MODEL_URL }}"
           ls -lh ${{ env.MODEL_PATH }}
@@ -120,9 +127,7 @@ jobs:
             --repository_cache=~/.cache/bazel/repo \
             --config=macos_arm64 \
             -c opt \
-            --define=litert_link_capi_so=true \
             --define=litert_runtime_link_mode=dynamic \
-            --define=resolve_symbols_in_exec=false \
             //runtime/engine:litert_lm_main
 
       - name: Run bazel test on MacOS.
@@ -131,9 +136,7 @@ jobs:
             --repository_cache=~/.cache/bazel/repo \
             --config=macos_arm64 \
             -c opt \
-            --define=litert_link_capi_so=true \
             --define=litert_runtime_link_mode=dynamic \
-            --define=resolve_symbols_in_exec=false \
             --test_output=errors \
             //runtime/... \
             //schema/... \
@@ -145,12 +148,13 @@ jobs:
           cp bazel-bin/runtime/engine/litert_lm_main litert_lm_main.macos_arm64
           gh release upload ${GITHUB_REF_NAME} litert_lm_main.macos_arm64 --clobber
 
-
-      - name: Install pytest
-        run: python3 -m pip install --break-system-packages pytest==8.3.4
-
       - name: Run pytest
-        run: pytest tools/pytest/ --model-path=${{ env.MODEL_PATH }} --build-system=bazel
+        run: |
+          if [ -f "${{ env.MODEL_PATH }}" ]; then
+            pytest tools/pytest/ --backend=cpu --model-path=${{ env.MODEL_PATH }} --build-system=bazel
+          else
+            echo "Skipping pytest on macOS because model file ${{ env.MODEL_PATH }} is not downloaded (unauthenticated PR)."
+          fi
 
       # TODO(totero): Re-enable this step once the bug is fixed.
       # - name: Run bazel build for iOS Simulator.
@@ -166,7 +170,6 @@ jobs:
       #       -c opt \
       #       --define=litert_link_capi_so=true \
       #       --define=litert_runtime_link_mode=dynamic \
-      #       --define=resolve_symbols_in_exec=false \
       #       //runtime/engine:litert_lm_main
 
       # - name: Update litert_lm_main prebuilt for iOS Simulator if new version tag is pushed.

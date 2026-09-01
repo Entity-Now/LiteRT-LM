@@ -44,9 +44,14 @@ ABSL_FLAG(int, max_num_tokens, 0,
           "will be set to one equal to or greater than "
           "benchmark_prefill_tokens + benchmark_decode_tokens.");
 ABSL_FLAG(int, max_output_tokens, -1,
-          "Maximum number of output tokens for generation.");
+          "Maximum number of output tokens for generation. For thinking "
+          "models, both thinking (reasoning) tokens and the final response "
+          "tokens count towards this limit.");
 ABSL_FLAG(int, max_num_images, 1,
           "Maximum number of images to use for LLM execution.");
+ABSL_FLAG(int, visual_token_budget, -1,
+          "Visual token budget for multimodal processing (maximum number of "
+          "vision tokens per image).");
 ABSL_FLAG(std::vector<std::string>, prefill_batch_sizes, {},
           "A list of maximum numbers of prefill tokens processed at once. If "
           "empty, it will be the list of one entry with the length of input "
@@ -56,6 +61,7 @@ ABSL_FLAG(int, num_output_candidates, 1,
           "The number of candidates generated for the given prompt, or the "
           "batch size of the decode signature.");
 ABSL_FLAG(bool, benchmark, false, "Benchmark the LLM execution.");
+ABSL_FLAG(bool, enable_profiling, false, "Enable per-op profiling.");
 ABSL_FLAG(int, benchmark_prefill_tokens, 0,
           "If benchmark is true and the value is larger than 0, the benchmark "
           "will use this number to set the number of prefill tokens "
@@ -75,6 +81,8 @@ ABSL_FLAG(bool, multi_turns, false,
 ABSL_FLAG(int, num_cpu_threads, 0,
           "If greater than 0, the number of CPU threads to use for the LLM "
           "execution with CPU backend.");
+ABSL_FLAG(bool, enable_ynnpack, false,
+          "Delegate supported CPU operations to YNNPACK before XNNPACK.");
 ABSL_FLAG(bool, gpu_external_tensor_mode, false,
           "If false (by default), the GPU backend will use no external tensor "
           "mode which runs slightly faster during decode. It should be set "
@@ -189,3 +197,13 @@ ABSL_FLAG(bool, use_hw_cache_update_for_npu, true,
 ABSL_FLAG(bool, use_hw_ple_for_npu, true, "If true, use HW PLE for NPU.");
 ABSL_FLAG(bool, enable_npu_debug_logging, false,
           "If true, enable debug logging for NPU.");
+ABSL_FLAG(
+    bool, disable_input_prompt_as_hint, false,
+    "If true, disable the input prompt as a hint when creating the engine. "
+    "This is useful to align the behavior of other languages with C++, where "
+    "the input prompt is not used as a hint.");
+ABSL_FLAG(bool, gpu_enable_metal_residency_set, false,
+          "If true, enable metal residency set for GPU backend which prevents "
+          "model weigths from being swapped out from memory. Note that it will "
+          "increase the memory pressure for other applications and may cause "
+          "others' crash with out-of-memory failures.");

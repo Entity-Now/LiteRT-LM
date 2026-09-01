@@ -31,12 +31,12 @@
 #include "absl/synchronization/mutex.h"  // from @com_google_absl
 #include "absl/types/span.h"  // from @com_google_absl
 #include "nlohmann/json_fwd.hpp"  // from @nlohmann_json
-#include "runtime/components/logits_processor/constrained_decoding/constraint.h"
-#include "runtime/components/logits_processor/constrained_decoding/constraint_provider.h"
-#include "runtime/components/logits_processor/constrained_decoding/constraint_provider_config.h"
-#include "runtime/components/logits_processor/no_repeat_ngram_config.h"
-#include "runtime/components/logits_processor/repetition_penalty_config.h"
-#include "runtime/components/logits_processor/suppress_tokens_config.h"
+#include "runtime/components/constrained_decoding/constraint.h"
+#include "runtime/components/constrained_decoding/constraint_provider.h"
+#include "runtime/components/constrained_decoding/constraint_provider_config.h"
+#include "runtime/components/constrained_decoding/no_repeat_ngram_config.h"
+#include "runtime/components/constrained_decoding/repetition_penalty_config.h"
+#include "runtime/components/constrained_decoding/suppress_tokens_config.h"
 #include "runtime/components/prompt_template.h"
 #include "runtime/conversation/io_types.h"
 #include "runtime/conversation/model_data_processor/config_registry.h"
@@ -124,6 +124,10 @@ class ConversationConfig {
   const std::string& stream_tool_calls_channel_name() const {
     return stream_tool_calls_channel_name_;
   }
+
+  // Returns whether to enable rewinding behavior (moving backwards in context
+  // without fully resetting to the beginning of the conversation).
+  bool enable_rewinding() const { return enable_rewinding_; }
 
  public:
   // Builder class for ConversationConfig.
@@ -236,6 +240,12 @@ class ConversationConfig {
       return *this;
     }
 
+    // Sets whether to enable rewinding.
+    Builder& SetEnableRewinding(bool enable_rewinding) {
+      enable_rewinding_ = enable_rewinding;
+      return *this;
+    }
+
     absl::StatusOr<ConversationConfig> Build(const Engine& engine) {
       return ConversationConfig::CreateInternal(
           engine, session_config_, preface_, overwrite_prompt_template_,
@@ -243,7 +253,8 @@ class ConversationConfig {
           prefill_preface_on_init_, constraint_provider_config_, channels_,
           filter_channel_content_from_kv_cache_, return_error_on_parse_failure_,
           return_error_on_max_tokens_reached_, thinking_config_,
-          stream_tool_calls_, stream_tool_calls_channel_name_);
+          stream_tool_calls_, stream_tool_calls_channel_name_,
+          enable_rewinding_);
     }
 
     // Returns a unique pointer to a ConversationConfig.
@@ -262,12 +273,13 @@ class ConversationConfig {
     bool prefill_preface_on_init_ = false;
     std::optional<ConstraintProviderConfig> constraint_provider_config_;
     std::optional<std::vector<Channel>> channels_ = std::nullopt;
-    bool filter_channel_content_from_kv_cache_ = false;
+    bool filter_channel_content_from_kv_cache_ = true;
     bool return_error_on_parse_failure_ = true;
     bool return_error_on_max_tokens_reached_ = false;
     std::optional<ThinkingConfig> thinking_config_ = std::nullopt;
     bool stream_tool_calls_ = false;
     std::string stream_tool_calls_channel_name_ = "tool_call";
+    bool enable_rewinding_ = true;
   };
 
   // Returns the constrained decoding config.
@@ -318,7 +330,8 @@ class ConversationConfig {
       bool return_error_on_max_tokens_reached = false,
       std::optional<ThinkingConfig> thinking_config = std::nullopt,
       bool stream_tool_calls = false,
-      const std::string& stream_tool_calls_channel_name = "tool_call");
+      const std::string& stream_tool_calls_channel_name = "tool_call",
+      bool enable_rewinding = true);
 
   explicit ConversationConfig(
       SessionConfig session_config, Preface preface,
@@ -333,7 +346,8 @@ class ConversationConfig {
       bool return_error_on_max_tokens_reached = false,
       std::optional<ThinkingConfig> thinking_config = std::nullopt,
       bool stream_tool_calls = false,
-      const std::string& stream_tool_calls_channel_name = "tool_call")
+      const std::string& stream_tool_calls_channel_name = "tool_call",
+      bool enable_rewinding = true)
       : session_config_(std::move(session_config)),
         preface_(std::move(preface)),
         prompt_template_(std::move(prompt_template)),
@@ -348,7 +362,8 @@ class ConversationConfig {
         return_error_on_max_tokens_reached_(return_error_on_max_tokens_reached),
         thinking_config_(thinking_config),
         stream_tool_calls_(stream_tool_calls),
-        stream_tool_calls_channel_name_(stream_tool_calls_channel_name) {}
+        stream_tool_calls_channel_name_(stream_tool_calls_channel_name),
+        enable_rewinding_(enable_rewinding) {}
 
   SessionConfig session_config_;
   Preface preface_;
@@ -364,6 +379,7 @@ class ConversationConfig {
   std::optional<ThinkingConfig> thinking_config_;
   bool stream_tool_calls_;
   std::string stream_tool_calls_channel_name_;
+  bool enable_rewinding_;
 };
 
 // Optional arguments for sending a message to the LLM.
@@ -430,7 +446,9 @@ struct OptionalArgs {
   // don't need to provide this argument.
   std::optional<DataProcessorArguments> args = std::nullopt;
 
-  // The maximum number of tokens to generate during decode.
+  // The maximum number of tokens to generate during decode. For thinking
+  // models, both thinking (reasoning) tokens and the final response tokens
+  // count towards this limit.
   std::optional<int> max_output_tokens = std::nullopt;
 
   // The task group id for asynchronous tasks. If provided, the task
@@ -612,8 +630,11 @@ class Conversation {
   absl::StatusOr<BenchmarkInfo*> GetMutableBenchmarkInfo();
 
   // Cancels the ongoing inference process, for asynchronous inference.
-  // Note: the underlying Session is not rollbacked, so the message
-  // from the user is actually sent to the LLM and processed for prefill.
+  //
+  // NOTE: Reusing the Conversation object after calling CancelProcess() is
+  // neither recommended nor supported. Calling CancelProcess() leaves the
+  // underlying session poisoned, and any subsequent calls to SendMessageAsync
+  // on the same Conversation will fail.
   void CancelProcess();
 
   // Clones the conversation. The cloned conversation will be independent of the
@@ -643,6 +664,14 @@ class Conversation {
   absl::StatusOr<std::string> RenderPrefaceIntoString(
       OptionalArgs optional_args);
 
+  // Returns debug info for this conversation's underlying session.
+  std::optional<SessionDebugInfo> GetSessionDebugInfo() const {
+    if (session_ != nullptr) {
+      return session_->GetSessionDebugInfo();
+    }
+    return std::nullopt;
+  }
+
  private:
   explicit Conversation(
       Engine& engine, std::unique_ptr<Engine::Session> session,
@@ -669,6 +698,18 @@ class Conversation {
   absl::StatusOr<std::string> GetSingleTurnTextFromSingleTurnTemplate(
       const Message& message, const OptionalArgs& optional_args);
 
+  // Creates a `DecodeConfig` from the session/conversation parameters and
+  // optional runtime overrides.
+  //
+  // `open_channel_name`: Indicates the name of an open channel tag right at the
+  // end of the prefilled prompt text (if any), as determined by checking
+  // whether the rendered prompt ends after a channel start tag (e.g.
+  // `<think>\n`) without a matching end tag. When sending a message where the
+  // thinking channel is prefilled (`open_channel_name ==
+  // thinking_channel->channel_name`), this should be passed so that
+  // `SetThinkingStartTokenIds` is configured empty (`{}`) and the constrained
+  // decoder starts immediately in active thinking state without waiting for
+  // duplicate start tokens.
   absl::StatusOr<DecodeConfig> CreateDecodeConfig(
       std::optional<RepetitionPenaltyConfig> repetition_penalty_config =
           std::nullopt,
@@ -676,7 +717,8 @@ class Conversation {
       std::optional<SuppressTokensConfig> suppress_tokens_config = std::nullopt,
       std::optional<ConstraintArg> decoding_constraint = std::nullopt,
       std::optional<int> max_output_tokens = std::nullopt,
-      std::optional<ThinkingConfig> thinking_config = std::nullopt);
+      std::optional<ThinkingConfig> thinking_config = std::nullopt,
+      std::optional<absl::string_view> open_channel_name = std::nullopt);
 
   // Adds a task controller to the task_controllers_ map if task_group_id is
   // provided.

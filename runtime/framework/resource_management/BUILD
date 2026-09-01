@@ -37,10 +37,10 @@ cc_library(
         "@com_google_absl//absl/time",
         "//runtime/components:sampler",
         "//runtime/components:stop_token_detector",
-        "//runtime/components/logits_processor:no_repeat_ngram_config",
-        "//runtime/components/logits_processor:repetition_penalty_config",
-        "//runtime/components/logits_processor:suppress_tokens_config",
-        "//runtime/components/logits_processor/constrained_decoding:constraint",
+        "//runtime/components/constrained_decoding:constraint",
+        "//runtime/components/constrained_decoding:no_repeat_ngram_config",
+        "//runtime/components/constrained_decoding:repetition_penalty_config",
+        "//runtime/components/constrained_decoding:suppress_tokens_config",
         "//runtime/engine:engine_settings",
         "//runtime/engine:io_types",
         "//runtime/framework/resource_management/context_handler",
@@ -51,6 +51,12 @@ cc_library(
     name = "threaded_execution_manager",
     srcs = ["threaded_execution_manager.cc"],
     hdrs = ["threaded_execution_manager.h"],
+    local_defines = select({
+        "//runtime/util:litert_lm_debugger_enabled": [
+            "LITERT_LM_DEBUGGER_ENABLED=1",
+        ],
+        "//conditions:default": [],
+    }),
     deps = [
         ":execution_manager",
         ":resource_manager",
@@ -74,10 +80,10 @@ cc_library(
         "//runtime/components:sampler",
         "//runtime/components:sampler_factory",
         "//runtime/components:stop_token_detector",
-        "//runtime/components/logits_processor:no_repeat_ngram_config",
-        "//runtime/components/logits_processor:repetition_penalty_config",
-        "//runtime/components/logits_processor:suppress_tokens_config",
-        "//runtime/components/logits_processor/constrained_decoding:constraint",
+        "//runtime/components/constrained_decoding:constraint",
+        "//runtime/components/constrained_decoding:no_repeat_ngram_config",
+        "//runtime/components/constrained_decoding:repetition_penalty_config",
+        "//runtime/components/constrained_decoding:suppress_tokens_config",
         "//runtime/core:tasks",
         "//runtime/engine:engine_interface",
         "//runtime/engine:engine_settings",
@@ -92,13 +98,24 @@ cc_library(
         "//runtime/util:executor_data_util",
         "//runtime/util:litert_status_util",
         "//runtime/util:tensor_buffer_util",
-    ],
+    ] + select({
+        "//runtime/util:litert_lm_debugger_enabled": [
+            "//runtime/util:runtime_debugger",
+        ],
+        "//conditions:default": [],
+    }),
 )
 
 cc_library(
     name = "serial_execution_manager",
     srcs = ["serial_execution_manager.cc"],
     hdrs = ["serial_execution_manager.h"],
+    local_defines = select({
+        "//runtime/util:litert_lm_debugger_enabled": [
+            "LITERT_LM_DEBUGGER_ENABLED=1",
+        ],
+        "//conditions:default": [],
+    }),
     deps = [
         ":execution_manager",
         ":resource_manager",
@@ -121,10 +138,10 @@ cc_library(
         "//runtime/components:sampler",
         "//runtime/components:sampler_factory",
         "//runtime/components:stop_token_detector",
-        "//runtime/components/logits_processor:no_repeat_ngram_config",
-        "//runtime/components/logits_processor:repetition_penalty_config",
-        "//runtime/components/logits_processor:suppress_tokens_config",
-        "//runtime/components/logits_processor/constrained_decoding:constraint",
+        "//runtime/components/constrained_decoding:constraint",
+        "//runtime/components/constrained_decoding:no_repeat_ngram_config",
+        "//runtime/components/constrained_decoding:repetition_penalty_config",
+        "//runtime/components/constrained_decoding:suppress_tokens_config",
         "//runtime/core:tasks",
         "//runtime/engine:engine_settings",
         "//runtime/engine:io_types",
@@ -138,7 +155,12 @@ cc_library(
         "//runtime/util:executor_data_util",
         "//runtime/util:litert_status_util",
         "//runtime/util:tensor_buffer_util",
-    ],
+    ] + select({
+        "//runtime/util:litert_lm_debugger_enabled": [
+            "//runtime/util:runtime_debugger",
+        ],
+        "//conditions:default": [],
+    }),
 )
 
 cc_test(
@@ -157,13 +179,13 @@ cc_test(
         "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/time",
+        "@com_google_absl//absl/types:span",
         "@litert//litert/cc:litert_tensor_buffer",
-        "@litert//support/tokenizer",
         "//runtime/components:model_resources",
-        "//runtime/components/logits_processor:no_repeat_ngram_config",
-        "//runtime/components/logits_processor:repetition_penalty_config",
-        "//runtime/components/logits_processor:suppress_tokens_config",
-        "//runtime/components/logits_processor/constrained_decoding:fake_constraint",
+        "//runtime/components/constrained_decoding:fake_constraint",
+        "//runtime/components/constrained_decoding:no_repeat_ngram_config",
+        "//runtime/components/constrained_decoding:repetition_penalty_config",
+        "//runtime/components/constrained_decoding:suppress_tokens_config",
         "//runtime/engine:engine_settings",
         "//runtime/engine:io_types",
         "//runtime/executor:audio_executor",
@@ -174,6 +196,7 @@ cc_test(
         "//runtime/proto:token_cc",
         "//runtime/util:litert_status_util",
         "//runtime/util:test_utils",
+        "//support/tokenizer",
     ],
 )
 

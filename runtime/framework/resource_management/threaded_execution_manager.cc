@@ -15,6 +15,7 @@
 #include "runtime/framework/resource_management/threaded_execution_manager.h"
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -41,10 +42,10 @@
 #include "litert/cc/litert_environment.h"  // from @litert
 #include "litert/cc/litert_macros.h"  // from @litert
 #include "litert/cc/litert_tensor_buffer.h"  // from @litert
-#include "runtime/components/logits_processor/constrained_decoding/constraint.h"
-#include "runtime/components/logits_processor/no_repeat_ngram_config.h"
-#include "runtime/components/logits_processor/repetition_penalty_config.h"
-#include "runtime/components/logits_processor/suppress_tokens_config.h"
+#include "runtime/components/constrained_decoding/constraint.h"
+#include "runtime/components/constrained_decoding/no_repeat_ngram_config.h"
+#include "runtime/components/constrained_decoding/repetition_penalty_config.h"
+#include "runtime/components/constrained_decoding/suppress_tokens_config.h"
 #include "runtime/components/model_resources.h"
 #include "runtime/components/sampler.h"
 #include "runtime/components/sampler_factory.h"
@@ -53,11 +54,11 @@
 #include "runtime/engine/engine.h"
 #include "runtime/engine/engine_settings.h"
 #include "runtime/engine/io_types.h"
-#include "runtime/executor/audio_executor.h"
-#include "runtime/executor/audio_executor_settings.h"
+#include "runtime/executor/audio/audio_executor.h"
+#include "runtime/executor/audio/audio_executor_settings.h"
 #include "runtime/executor/llm_executor.h"
 #include "runtime/executor/llm_executor_io_types.h"
-#include "runtime/executor/vision_executor_settings.h"
+#include "runtime/executor/vision/vision_executor_settings.h"
 #include "runtime/framework/resource_management/execution_manager.h"
 #include "runtime/framework/resource_management/resource_manager.h"
 #include "runtime/framework/threadpool.h"
@@ -66,15 +67,21 @@
 #include "runtime/util/status_macros.h"
 #include "runtime/util/tensor_buffer_util.h"
 
+#if defined(LITERT_LM_DEBUGGER_ENABLED)
+#include "runtime/util/runtime_debugger.h"
+#endif  // defined(LITERT_LM_DEBUGGER_ENABLED)
+
 namespace litert::lm {
 
 ThreadedExecutionManager::ThreadedExecutionManager(
     Tokenizer* absl_nonnull tokenizer,
     std::unique_ptr<ResourceManager> absl_nonnull resource_manager,
-    ::litert::Environment* absl_nullable litert_env)
+    ::litert::Environment* absl_nullable litert_env,
+    std::shared_ptr<RuntimeDebugger> absl_nullable runtime_debugger)
     : tokenizer_(std::move(tokenizer)),
       resource_manager_(std::move(resource_manager)),
-      litert_env_(litert_env) {
+      litert_env_(litert_env),
+      runtime_debugger_(std::move(runtime_debugger)) {
   execution_thread_pool_ =
       std::make_unique<ThreadPool>(/*name_prefix=*/"execution_thread_pool",
                                    /*max_num_threads=*/1);
@@ -134,10 +141,16 @@ absl::StatusOr<SessionId> ThreadedExecutionManager::RegisterNewSession(
           "External sampler currently only supports CPU backend.");
     }
     ABSL_ASSIGN_OR_RETURN(
-        sampler, CreateSampler(session_config.GetSamplerBackend(),
-                               session_config.GetNumOutputCandidates(),
-                               session_config.GetSamplerParams(),
-                               litert_env_ ? litert_env_->Get() : nullptr));
+        sampler,
+        CreateSampler(
+            session_config.GetSamplerBackend(),
+            session_config.GetNumOutputCandidates(),
+            session_config.GetSamplerParams(),
+            litert_env_ == nullptr
+                ? std::nullopt
+                : std::optional<
+                      std::reference_wrapper<const ::litert::Environment>>(
+                      *litert_env_)));
   }
   auto stop_token_detector = std::make_unique<StopTokenDetector>(1);
   for (const auto& stop_token_sequence : session_config.GetStopTokenIds()) {
@@ -168,6 +181,11 @@ absl::StatusOr<SessionId> ThreadedExecutionManager::RegisterNewSession(
       ABSL_RETURN_IF_ERROR(resource_manager_->TryLoadingVisionExecutor());
     }
     session_lookup_.insert({session_id, std::move(session_info)});
+#if defined(LITERT_LM_DEBUGGER_ENABLED)
+    if (runtime_debugger_ != nullptr) {
+      runtime_debugger_->RegisterDebugSession(session_id);
+    }
+#endif  // defined(LITERT_LM_DEBUGGER_ENABLED)
   }
   return session_id;
 }
@@ -190,8 +208,22 @@ absl::Status ThreadedExecutionManager::ReleaseSession(SessionId session_id) {
   absl::erase_if(task_lookup_, [session_id](const auto& kv) {
     return kv.second.session_id == session_id;
   });
+#if defined(LITERT_LM_DEBUGGER_ENABLED)
+  if (runtime_debugger_ != nullptr) {
+    runtime_debugger_->UnregisterDebugSession(session_id);
+  }
+#endif  // defined(LITERT_LM_DEBUGGER_ENABLED)
   session_lookup_.erase(session_id);
+  if (session_lookup_.empty()) {
+    resource_manager_->ResetCurrentHandler();
+  }
   return absl::OkStatus();
+}
+
+absl::Status ThreadedExecutionManager::UpdateGpuEnableMetalResidencySet(
+    bool enable_metal_residency_set) {
+  return resource_manager_->UpdateGpuEnableMetalResidencySet(
+      enable_metal_residency_set);
 }
 
 absl::Status ThreadedExecutionManager::CancelAllTasksInSession(
@@ -725,7 +757,8 @@ ThreadedExecutionManager::Create(
     std::unique_ptr<AudioExecutorSettings> absl_nullable
     audio_executor_settings,
     ::litert::Environment* absl_nullable litert_env,
-    std::unique_ptr<AudioExecutor> absl_nullable audio_executor) {
+    std::unique_ptr<AudioExecutor> absl_nullable audio_executor,
+    std::shared_ptr<RuntimeDebugger> absl_nullable runtime_debugger) {
   ABSL_ASSIGN_OR_RETURN(
       auto resource_manager,
       ResourceManager::Create(model_resources, std::move(llm_executor),
@@ -733,7 +766,8 @@ ThreadedExecutionManager::Create(
                               std::move(audio_executor_settings), litert_env,
                               std::move(audio_executor)));
   return absl::WrapUnique(new ThreadedExecutionManager(
-      tokenizer, std::move(resource_manager), litert_env));
+      tokenizer, std::move(resource_manager), litert_env,
+      std::move(runtime_debugger)));
 }
 
 absl::Status ThreadedExecutionManager::WaitUntilDone(TaskId task_id,
@@ -785,7 +819,8 @@ absl::Status ThreadedExecutionManager::AddPrefillTask(
     callback = [](absl::StatusOr<Responses> responses) {};
   }
 
-  auto task = [this, task_id, inputs = std::move(inputs)]() mutable -> void {
+  auto task = [this, task_id, session_id,
+               inputs = std::move(inputs)]() mutable -> void {
     auto task_info = StartTask(task_id);
     if (!task_info.ok()) {
       FinishTaskAndLogErrors(task_id, task_info.status(),
@@ -824,6 +859,14 @@ absl::Status ThreadedExecutionManager::AddPrefillTask(
 
     auto executor_inputs =
         ProcessAndCombineContents(inputs, session_info->benchmark_info);
+    if (executor_inputs.ok() &&
+        session_info->session_config.GetAudioEmbeddingsCallback() != nullptr) {
+      auto audio_data_status = executor_inputs->GetAudioDataPtr();
+      if (audio_data_status.ok() && *audio_data_status != nullptr) {
+        (*session_info->session_config.GetAudioEmbeddingsCallback())(
+            **audio_data_status);
+      }
+    }
     if (!executor_inputs.ok()) {
       llm_executor.value().reset();
       if (executor_inputs.status().message() ==
@@ -872,6 +915,15 @@ absl::Status ThreadedExecutionManager::AddPrefillTask(
                              std::move(callback));
       return;
     }
+
+#if defined(LITERT_LM_DEBUGGER_ENABLED)
+    if (runtime_debugger_ != nullptr) {
+      runtime_debugger_->SetActiveDebugSession(session_id);
+    }
+#else
+    // Suppress -Wunused-variable for non-debugger builds.
+    (void)session_id;
+#endif
 
     auto responses =
         Tasks::Prefill(*llm_executor.value(), *executor_inputs,
@@ -929,7 +981,19 @@ absl::Status ThreadedExecutionManager::AddDecodeTask(
     callback = [](absl::StatusOr<Responses> responses) {};
   }
 
-  auto task = [this, task_id,
+#if defined(LITERT_LM_DEBUGGER_ENABLED)
+  if (runtime_debugger_ != nullptr) {
+    callback = [this, session_id, cb = std::move(callback)](
+                   absl::StatusOr<Responses> responses) mutable {
+      if (responses.ok() && runtime_debugger_ != nullptr) {
+        runtime_debugger_->ObserveTokens(session_id, *responses);
+      }
+      cb(std::move(responses));
+    };
+  }
+#endif  // defined(LITERT_LM_DEBUGGER_ENABLED)
+
+  auto task = [this, task_id, session_id,
                repetition_penalty_config = std::move(repetition_penalty_config),
                no_repeat_ngram_config = std::move(no_repeat_ngram_config),
                suppress_tokens_config = std::move(suppress_tokens_config),
@@ -976,19 +1040,29 @@ absl::Status ThreadedExecutionManager::AddDecodeTask(
     session_info->stop_token_detector->ResetBatch(num_output_candidates);
     std::optional<Sampler*> optional_sampler = std::nullopt;
     std::optional<litert::TensorBuffer> decoded_ids_buffer = std::nullopt;
-    if (session_info->sampler != nullptr) {
-      optional_sampler = session_info->sampler.get();
-      std::vector<int> decoded_ids(num_output_candidates,
-                                   session_info->last_prefill_token_id);
-      auto decoded_ids_buffer_or =
-          CopyToTensorBuffer<int>(decoded_ids, {num_output_candidates, 1});
-      if (!decoded_ids_buffer_or.HasValue()) {
-        llm_executor.value().reset();
-        callback(absl::InternalError(decoded_ids_buffer_or.Error().Message()));
-        return;
+      if (session_info->sampler != nullptr) {
+        optional_sampler = session_info->sampler.get();
+        std::vector<int> decoded_ids(num_output_candidates,
+                                     session_info->last_prefill_token_id);
+        auto decoded_ids_buffer_or =
+            CopyToTensorBuffer<int>(decoded_ids, {num_output_candidates, 1});
+        if (!decoded_ids_buffer_or.HasValue()) {
+          llm_executor.value().reset();
+          callback(
+              absl::InternalError(decoded_ids_buffer_or.Error().Message()));
+          return;
+        }
+        decoded_ids_buffer = std::move(decoded_ids_buffer_or.Value());
       }
-      decoded_ids_buffer = std::move(decoded_ids_buffer_or.Value());
+
+#if defined(LITERT_LM_DEBUGGER_ENABLED)
+    if (runtime_debugger_ != nullptr) {
+      runtime_debugger_->SetActiveDebugSession(session_id);
     }
+#else
+    // Suppress -Wunused-variable for non-debugger builds.
+    (void)session_id;
+#endif
 
     auto responses = Tasks::Decode(
         *llm_executor.value(), *tokenizer_, *session_info->stop_token_detector,

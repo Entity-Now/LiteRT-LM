@@ -37,12 +37,12 @@
 #include "absl/time/time.h"  // from @com_google_absl
 #include "absl/types/span.h"  // from @com_google_absl
 #include "nlohmann/json.hpp"  // from @nlohmann_json
-#include "runtime/components/logits_processor/constrained_decoding/constraint_provider.h"
-#include "runtime/components/logits_processor/constrained_decoding/constraint_provider_config.h"
-#include "runtime/components/logits_processor/constrained_decoding/constraint_provider_factory.h"
-#include "runtime/components/logits_processor/no_repeat_ngram_config.h"
-#include "runtime/components/logits_processor/repetition_penalty_config.h"
-#include "runtime/components/logits_processor/suppress_tokens_config.h"
+#include "runtime/components/constrained_decoding/constraint_provider.h"
+#include "runtime/components/constrained_decoding/constraint_provider_config.h"
+#include "runtime/components/constrained_decoding/constraint_provider_factory.h"
+#include "runtime/components/constrained_decoding/no_repeat_ngram_config.h"
+#include "runtime/components/constrained_decoding/repetition_penalty_config.h"
+#include "runtime/components/constrained_decoding/suppress_tokens_config.h"
 #include "runtime/components/prompt_template.h"
 #include "runtime/conversation/channel_util.h"
 #include "runtime/conversation/internal_callback_util.h"
@@ -70,6 +70,8 @@ constexpr absl::string_view kUser = "user";
 constexpr absl::string_view kChannelsKey = "channels";
 constexpr absl::string_view kChannelContentCheckpoint =
     "channel_content_checkpoint";
+constexpr absl::string_view kStartContentCheckpoint =
+    "start_content_checkpoint";
 
 bool IsEmptyInputError(const absl::Status& status) {
   return absl::IsInvalidArgument(status) &&
@@ -152,7 +154,7 @@ absl::StatusOr<ConversationConfig> ConversationConfig::CreateInternal(
     bool filter_channel_content_from_kv_cache,
     bool return_error_on_parse_failure, bool return_error_on_max_tokens_reached,
     std::optional<ThinkingConfig> thinking_config, bool stream_tool_calls,
-    const std::string& stream_tool_calls_channel_name) {
+    const std::string& stream_tool_calls_channel_name, bool enable_rewinding) {
   if (preface.has_value() && !std::holds_alternative<JsonPreface>(*preface)) {
     return absl::InvalidArgumentError("Only JsonPreface is supported for now.");
   }
@@ -189,10 +191,11 @@ absl::StatusOr<ConversationConfig> ConversationConfig::CreateInternal(
     channels = *std::move(overwrite_channels);
   } else if (metadata.has_value()) {
     for (const auto& channel : metadata->channels()) {
-      channels.push_back(
-          litert::lm::Channel{.channel_name = channel.channel_name(),
-                              .start = channel.start(),
-                              .end = channel.end()});
+      channels.push_back(litert::lm::Channel{
+          .channel_name = channel.channel_name(),
+          .start = channel.start(),
+          .end = channel.end(),
+          .is_reasoning_channel = channel.is_reasoning_channel()});
     }
   }
 
@@ -220,7 +223,7 @@ absl::StatusOr<ConversationConfig> ConversationConfig::CreateInternal(
       std::move(constraint_provider_config), std::move(channels),
       filter_channel_content_from_kv_cache, return_error_on_parse_failure,
       return_error_on_max_tokens_reached, thinking_config, stream_tool_calls,
-      stream_tool_calls_channel_name);
+      stream_tool_calls_channel_name, enable_rewinding);
 }
 
 absl::StatusOr<std::string>
@@ -346,7 +349,8 @@ absl::StatusOr<DecodeConfig> Conversation::CreateDecodeConfig(
     std::optional<SuppressTokensConfig> suppress_tokens_config,
     std::optional<ConstraintArg> decoding_constraint,
     std::optional<int> max_output_tokens,
-    std::optional<ThinkingConfig> thinking_config) {
+    std::optional<ThinkingConfig> thinking_config,
+    std::optional<absl::string_view> open_channel_name) {
   auto decode_config = DecodeConfig::CreateDefault();
 
   if (repetition_penalty_config.has_value()) {
@@ -369,22 +373,26 @@ absl::StatusOr<DecodeConfig> Conversation::CreateDecodeConfig(
     decode_config.SetThinkingTokenBudget(
         thinking_config->thinking_token_budget());
     const Channel* thinking_channel = nullptr;
-    // TODO(b/521921341): Support dynamically configuring the thinking channel
-    // name via LlmMetadata. Use "thought" as the default name for now.
-    for (const auto& channel : config_.GetChannels()) {
-      if (channel.channel_name == "thought") {
-        thinking_channel = &channel;
-        break;
-      }
+    // We assume the thinking channel is the first channel configured for the
+    // conversation.
+    // TODO(b/521921341): Support dynamically identifying or specifying the
+    // thinking channel when multiple channels are present.
+    if (!config_.GetChannels().empty()) {
+      thinking_channel = &config_.GetChannels().front();
     }
     if (thinking_channel != nullptr) {
-      ASSIGN_OR_RETURN(auto start_token_ids,
-                       const_cast<Tokenizer&>(engine_.GetTokenizer())
-                           .TextToTokenIds(thinking_channel->start));
-      decode_config.SetThinkingStartTokenIds(std::move(start_token_ids));
-      ASSIGN_OR_RETURN(auto end_token_ids,
-                       const_cast<Tokenizer&>(engine_.GetTokenizer())
-                           .TextToTokenIds(thinking_channel->end));
+      if (open_channel_name.has_value() &&
+          *open_channel_name == thinking_channel->channel_name) {
+        decode_config.SetThinkingStartTokenIds({});
+      } else {
+        ABSL_ASSIGN_OR_RETURN(auto start_token_ids,
+                              const_cast<Tokenizer&>(engine_.GetTokenizer())
+                                  .TextToTokenIds(thinking_channel->start));
+        decode_config.SetThinkingStartTokenIds(std::move(start_token_ids));
+      }
+      ABSL_ASSIGN_OR_RETURN(auto end_token_ids,
+                            const_cast<Tokenizer&>(engine_.GetTokenizer())
+                                .TextToTokenIds(thinking_channel->end));
       decode_config.SetThinkingEndTokenIds(std::move(end_token_ids));
     }
   } else {
@@ -561,7 +569,14 @@ absl::Status Conversation::SendMessageAsync(
     const Message& message,
     absl::AnyInvocable<void(absl::StatusOr<Message>)> user_callback,
     OptionalArgs optional_args) {
-  ABSL_ASSIGN_OR_RETURN(const std::string& single_turn_text,
+  if (optional_args.args.has_value() &&
+      engine_.GetEngineSettings().GetMaxVisionTokensPerImage().has_value()) {
+    ABSL_RETURN_IF_ERROR(ValidateVisualTokenBudget(
+        *optional_args.args,
+        *engine_.GetEngineSettings().GetMaxVisionTokensPerImage()));
+  }
+
+  ABSL_ASSIGN_OR_RETURN(std::string single_turn_text,
                         GetSingleTurnText(message, optional_args));
   auto open_channel_name =
       GetOpenChannelName(single_turn_text, config_.GetChannels());
@@ -577,6 +592,10 @@ absl::Status Conversation::SendMessageAsync(
     } else {
       history_.push_back(message);
     }
+  }
+
+  if (!config_.enable_rewinding() && was_history_empty) {
+    ABSL_RETURN_IF_ERROR(session_->SaveCheckpoint(kStartContentCheckpoint));
   }
 
   // If channel content (e.g. reasoning) needs to be filtered from the KV cache,
@@ -697,7 +716,8 @@ absl::Status Conversation::SendMessageAsync(
                          std::move(optional_args.suppress_tokens_config),
                          std::move(optional_args.decoding_constraint),
                          optional_args.max_output_tokens,
-                         ResolveThinkingConfig(config_, optional_args)));
+                         ResolveThinkingConfig(config_, optional_args),
+                         open_channel_name));
 
   std::optional<std::string> task_group_id = optional_args.task_group_id;
 
@@ -724,9 +744,8 @@ absl::Status Conversation::SendMessageAsync(
                 // status and do not proceed to decode.
                 (*callback)(responses.status());
               } else if (responses.ok() &&
-                         (responses->GetTaskState() == TaskState::kCancelled ||
-                          responses->GetTaskState() ==
-                              TaskState::kMaxNumTokensReached)) {
+                         IsTaskEndState(responses->GetTaskState()) &&
+                         responses->GetTaskState() != TaskState::kDone) {
                 (*callback)(responses);
               } else if (IsEmptyInputError(responses.status()) ||
                          (responses.ok() &&
@@ -774,8 +793,8 @@ absl::Status Conversation::SendMessageAsync(
         return;
       }
 
-      if (responses->GetTaskState() == TaskState::kCancelled ||
-          responses->GetTaskState() == TaskState::kMaxNumTokensReached) {
+      if (IsTaskEndState(responses->GetTaskState()) &&
+          responses->GetTaskState() != TaskState::kDone) {
         (*internal_callback)(responses);
         return;
       }
@@ -1035,8 +1054,15 @@ Conversation::RewindAndGetInputDataVector(const OptionalArgs& optional_args) {
     return std::vector<InputData>();
   }
 
-  // Rewind the session to the saved checkpoint.
-  ABSL_RETURN_IF_ERROR(session_->RewindToCheckpoint(kChannelContentCheckpoint));
+  // If rewinding enabled, rewind the session to the saved checkpoint.
+  if (config_.enable_rewinding()) {
+    ABSL_RETURN_IF_ERROR(
+        session_->RewindToCheckpoint(kChannelContentCheckpoint));
+  } else {
+    // Otherwise rewind to the beginning.
+    ABSL_RETURN_IF_ERROR(session_->RewindToCheckpoint(kStartContentCheckpoint));
+    checkpoint_message_index_ = 0;
+  }
 
   // Get the InputData vector for the messages from the checkpoint onward.
   ABSL_ASSIGN_OR_RETURN(

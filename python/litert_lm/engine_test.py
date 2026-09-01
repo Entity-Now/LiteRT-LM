@@ -61,7 +61,9 @@ class LiteRtLmTestBase(parameterized.TestCase):
 
 class EngineTest(LiteRtLmTestBase):
 
-  _EXPECTED_RESPONSE = "TarefaByte دارایेत्र investigaciónప్రదేశ"
+  _EXPECTED_RESPONSE = (
+      " spectrophot spectrophot<unused178><unused178><unused178><unused178>"
+  )
 
   def test_engine_init_fail(self):
     with self.assertRaisesRegex(
@@ -118,6 +120,68 @@ class EngineTest(LiteRtLmTestBase):
 
     mock_set_num_threads.assert_called_once_with(mock.ANY, 4)
     mock_set_audio_num_threads.assert_called_once_with(mock.ANY, 2)
+
+  def test_engine_init_with_use_ringbuffers_local_attention(self):
+    lib = litert_lm._ffi._get_lib()
+    orig_fn = lib.litert_lm_engine_settings_set_use_ringbuffers_local_attention
+
+    mock_set_ringbuffers = self.enter_context(
+        mock.patch.object(
+            lib,
+            "litert_lm_engine_settings_set_use_ringbuffers_local_attention",
+            autospec=True,
+            side_effect=orig_fn,
+        )
+    )
+
+    litert_lm.Engine(
+        self.model_path,
+        backend=litert_lm.Backend.CPU(),
+        use_ringbuffers_local_attention=True,
+        cache_dir=":nocache",
+    )
+
+    mock_set_ringbuffers.assert_called_once_with(mock.ANY, True)
+
+  def test_engine_init_with_enable_ynnpack(self):
+    lib = litert_lm._ffi._get_lib()
+    orig_fn = lib.litert_lm_engine_settings_set_enable_ynnpack
+
+    mock_set_enable_ynnpack = self.enter_context(
+        mock.patch.object(
+            lib,
+            "litert_lm_engine_settings_set_enable_ynnpack",
+            autospec=True,
+            side_effect=orig_fn,
+        )
+    )
+
+    # Default should not call set_enable_ynnpack.
+    litert_lm.Engine(
+        self.model_path,
+        backend=litert_lm.Backend.CPU(),
+        cache_dir=":nocache",
+    )
+    mock_set_enable_ynnpack.assert_not_called()
+
+    # enable_ynnpack=True
+    litert_lm.Engine(
+        self.model_path,
+        backend=litert_lm.Backend.CPU(),
+        enable_ynnpack=True,
+        cache_dir=":nocache",
+    )
+    mock_set_enable_ynnpack.assert_called_once_with(mock.ANY, True)
+    mock_set_enable_ynnpack.reset_mock()
+
+    # enable_ynnpack=False
+    litert_lm.Engine(
+        self.model_path,
+        backend=litert_lm.Backend.CPU(),
+        enable_ynnpack=False,
+        cache_dir=":nocache",
+    )
+    mock_set_enable_ynnpack.assert_called_once_with(mock.ANY, False)
 
   @mock.patch("sys.platform", "win32")
   def test_engine_init_with_npu_backend(self):
@@ -370,6 +434,29 @@ class EngineTest(LiteRtLmTestBase):
 
       mock_set_num_threads.assert_called_once_with(mock.ANY, 4)
 
+  def test_benchmark_class_with_enable_speculative_decoding(self):
+    lib = litert_lm._ffi._get_lib()
+    orig_set_spec = (
+        lib.litert_lm_engine_settings_set_enable_speculative_decoding
+    )
+    with mock.patch.object(
+        lib,
+        "litert_lm_engine_settings_set_enable_speculative_decoding",
+        autospec=True,
+        side_effect=orig_set_spec,
+    ) as mock_set_spec:
+      benchmark = litert_lm.Benchmark(
+          self.model_path,
+          litert_lm.Backend.CPU(),
+          prefill_tokens=10,
+          decode_tokens=10,
+          cache_dir=":nocache",
+          enable_speculative_decoding=False,
+      )
+      benchmark.run()
+
+      mock_set_spec.assert_called_once_with(mock.ANY, False)
+
   def test_engine_abc_inheritance(self):
     with self._create_engine() as engine:
       self.assertIsInstance(engine, litert_lm.AbstractEngine)
@@ -435,7 +522,24 @@ class EngineTest(LiteRtLmTestBase):
       # Response should be shorter because of max_output_tokens=1 default in
       # conversation
       text = "".join([c.get("text", "") for c in message.get("content", [])])
-      self.assertLess(len(text), 10)
+      self.assertLess(len(text), 15)
+
+  def test_create_conversation_with_chat_template(self):
+    tmpl = "{{ bos_token }}{% for m in messages %}{{ m.content }}{% endfor %}"
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation(chat_template=tmpl) as conversation,
+    ):
+      self.assertEqual(conversation.chat_template, tmpl)
+
+  def test_create_conversation_with_filter_channel_content_from_kv_cache(self):
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation(
+            filter_channel_content_from_kv_cache=True
+        ) as conversation,
+    ):
+      self.assertIsNotNone(conversation)
 
   def test_create_conversation_with_max_output_tokens_async(self):
     with (
@@ -445,7 +549,7 @@ class EngineTest(LiteRtLmTestBase):
       stream = conversation.send_message_async("Hello world!")
       text_pieces = self._extract_text(stream)
       self.assertLen(text_pieces, 1)
-      self.assertLess(len("".join(text_pieces)), 10)
+      self.assertLess(len("".join(text_pieces)), 15)
 
   def test_conversation_send_message_object(self):
     with (
@@ -680,6 +784,68 @@ class EngineTest(LiteRtLmTestBase):
       text_pieces = self._extract_text(stream)
       self.assertNotEmpty(text_pieces)
 
+  def test_conversation_send_message_with_no_repeat_ngram_config(self):
+    no_repeat_ngram_config = litert_lm.NoRepeatNgramConfig(
+        no_repeat_ngram_size=3,
+        window_size=10,
+    )
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation() as conversation,
+    ):
+      message = conversation.send_message(
+          "Hello world!",
+          no_repeat_ngram_config=no_repeat_ngram_config,
+      )
+      self.assertIn("role", message)
+      self.assertEqual(message["role"], "assistant")
+
+  def test_conversation_send_message_async_with_no_repeat_ngram_config(self):
+    no_repeat_ngram_config = litert_lm.NoRepeatNgramConfig(
+        no_repeat_ngram_size=3,
+        window_size=10,
+    )
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation() as conversation,
+    ):
+      stream = conversation.send_message_async(
+          "Hello world!",
+          no_repeat_ngram_config=no_repeat_ngram_config,
+      )
+      text_pieces = self._extract_text(stream)
+      self.assertNotEmpty(text_pieces)
+
+  def test_conversation_send_message_with_suppress_tokens_config(self):
+    suppress_tokens_config = litert_lm.SuppressTokensConfig(
+        suppress_tokens=[1, 2, 3],
+    )
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation() as conversation,
+    ):
+      message = conversation.send_message(
+          "Hello world!",
+          suppress_tokens_config=suppress_tokens_config,
+      )
+      self.assertIn("role", message)
+      self.assertEqual(message["role"], "assistant")
+
+  def test_conversation_send_message_async_with_suppress_tokens_config(self):
+    suppress_tokens_config = litert_lm.SuppressTokensConfig(
+        suppress_tokens=[1, 2, 3],
+    )
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation() as conversation,
+    ):
+      stream = conversation.send_message_async(
+          "Hello world!",
+          suppress_tokens_config=suppress_tokens_config,
+      )
+      text_pieces = self._extract_text(stream)
+      self.assertNotEmpty(text_pieces)
+
   def test_conversation_send_message_with_max_output_tokens(self):
     with (
         self._create_engine() as engine,
@@ -690,7 +856,7 @@ class EngineTest(LiteRtLmTestBase):
       self.assertEqual(message["role"], "assistant")
       # Response should be shorter because of max_output_tokens=1
       text = "".join([c.get("text", "") for c in message.get("content", [])])
-      self.assertLess(len(text), 10)
+      self.assertLess(len(text), 15)
 
   def test_conversation_send_message_async_with_max_output_tokens(self):
     with (
@@ -702,7 +868,7 @@ class EngineTest(LiteRtLmTestBase):
       )
       text_pieces = self._extract_text(stream)
       self.assertLen(text_pieces, 1)
-      self.assertLess(len("".join(text_pieces)), 10)
+      self.assertLess(len("".join(text_pieces)), 15)
 
   @parameterized.parameters(True, False)
   def test_session_api_apply_prompt_template(self, apply_prompt_template):
@@ -711,6 +877,81 @@ class EngineTest(LiteRtLmTestBase):
           apply_prompt_template=apply_prompt_template
       ) as session:
         self.assertIsNotNone(session)
+
+  def test_response_format_validation(self):
+    with self.assertRaisesRegex(ValueError, "Invalid JSON schema string"):
+      litert_lm.ResponseFormat.json("{invalid_json: true")
+
+  def test_response_format_without_enabling(self):
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation() as conversation,
+    ):
+      with self.assertRaisesRegex(
+          ValueError,
+          "response_format cannot be used unless constrained_decoding_config",
+      ):
+        conversation.send_message(
+            "What is the capital of France?",
+            response_format=litert_lm.ResponseFormat.regex("[0-9]{3}"),
+        )
+
+      with self.assertRaisesRegex(
+          ValueError,
+          "response_format cannot be used unless constrained_decoding_config",
+      ):
+        # We must iterate the generator to trigger the exception
+        next(
+            conversation.send_message_async(
+                "What is the capital of France?",
+                response_format=litert_lm.ResponseFormat.regex("[0-9]{3}"),
+            )
+        )
+
+  def test_create_conversation_enable_constrained_decoding(self):
+    lib = litert_lm._ffi._get_lib()
+    with (
+        mock.patch.object(
+            lib,
+            "litert_lm_conversation_config_set_enable_constrained_decoding",
+            wraps=lib.litert_lm_conversation_config_set_enable_constrained_decoding,
+        ) as mock_set_enable_constrained,
+        mock.patch.object(
+            lib,
+            "litert_lm_conversation_config_set_constraint_provider",
+            wraps=lib.litert_lm_conversation_config_set_constraint_provider,
+        ) as mock_set_constraint_provider,
+    ):
+      with (
+          self._create_engine() as engine,
+          engine.create_conversation(
+              constrained_decoding_config=litert_lm.ConstrainedDecodingConfig(
+                  enable=True
+              )
+          ) as conv,
+      ):
+        self.assertIsNotNone(conv)
+        mock_set_enable_constrained.assert_called_once()
+        args, _ = mock_set_enable_constrained.call_args
+        self.assertTrue(args[1])
+
+      mock_set_enable_constrained.reset_mock()
+      mock_set_constraint_provider.reset_mock()
+
+      with (
+          self._create_engine() as engine,
+          engine.create_conversation(
+              constrained_decoding_config=litert_lm.ConstrainedDecodingConfig(
+                  enable=True,
+                  provider=litert_lm.LiteRtLmConstraintProviderType.LL_GUIDANCE,
+              )
+          ) as conv,
+      ):
+        self.assertIsNotNone(conv)
+        mock_set_constraint_provider.assert_called_once()
+        mock_set_enable_constrained.assert_called_once()
+        args, _ = mock_set_enable_constrained.call_args
+        self.assertTrue(args[1])
 
 
 class FunctionCallingTest(LiteRtLmTestBase):

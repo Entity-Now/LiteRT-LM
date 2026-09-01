@@ -47,6 +47,12 @@ export const PartialSettingsSchema = SettingsSchema.partial();
 /** Type for inference configuration settings. */
 export type Settings = z.infer<typeof SettingsSchema>;
 
+/** Model-specific settings subset. */
+export type ModelSettings = Pick<
+    Settings,
+    'selectedModelPath' | 'contextLength' | 'maxOutputTokens' | 'samplerType' |
+    'temperature' | 'topP' | 'topK' | 'enableThinking'>;
+
 /** List of supported default models available for selection. */
 export const MODELS = [
   {
@@ -62,6 +68,27 @@ export const MODELS = [
     path:
         'https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it-web.litertlm',
     size: '2.8 GB'
+  },
+  {
+    name: 'Gemma 4 12B',
+    filename: 'gemma-4-12B-it-web.litertlm',
+    path:
+        'https://huggingface.co/litert-community/gemma-4-12B-it-litert-lm/resolve/main/gemma-4-12B-it-web.litertlm',
+    size: '5.6 GB'
+  },
+  {
+    name: 'Gemma 4 26B A4B',
+    filename: 'gemma-4-26B-A4B-it-web.litertlm',
+    path:
+        'https://huggingface.co/litert-community/gemma-4-26B-A4B-it-litert-lm/resolve/main/gemma-4-26B-A4B-it-web.litertlm',
+    size: '14.7 GB'
+  },
+  {
+    name: 'Gemma 4 31B',
+    filename: 'gemma-4-31B-it-web.litertlm',
+    path:
+        'https://huggingface.co/litert-community/gemma-4-31B-it-litert-lm/resolve/main/gemma-4-31B-it-web.litertlm',
+    size: '17.9 GB'
   }
 ];
 
@@ -79,6 +106,19 @@ export class SettingsStore implements Settings {
   enableThinking = true;
   customModels: CustomModel[] = [];
   localDirModels: CustomModel[] = [];
+
+  get modelSettings(): ModelSettings {
+    return {
+      selectedModelPath: this.selectedModelPath,
+      contextLength: this.contextLength,
+      maxOutputTokens: this.maxOutputTokens,
+      samplerType: this.samplerType,
+      temperature: this.temperature,
+      topP: this.topP,
+      topK: this.topK,
+      enableThinking: this.enableThinking,
+    };
+  }
 
   private readonly SETTINGS_KEY = 'litertlm-chat-settings';
 

@@ -25,40 +25,57 @@ let package = Package(
     .library(
       name: "LiteRTLM",
       targets: ["LiteRTLM"]
-    )
+    ),
+    .library(
+      name: "LiteRTLMFoundationModels",
+      targets: ["LiteRTLMFoundationModels"]
+    ),
   ],
   targets: [
     // The Prebuilt Binary Target for iOS
     .binaryTarget(
       name: "CLiteRTLM",
-      url: "https://github.com/google-ai-edge/LiteRT-LM/releases/download/v0.14.0/CLiteRTLM.xcframework.zip",
-      checksum: "4a4bdb0e89689ceacc54c2fb7ae0efe8f5dad2404110976a29c3bf6b374a511e"
+      url:
+        "https://github.com/google-ai-edge/LiteRT-LM/releases/download/v0.16.0/CLiteRTLM.xcframework.zip",
+      checksum: "4e0f683da07566ee79c143d2d58d387f77052b0e6a41562c969e5d2728fc9f4b"
     ),
     // The Prebuilt Binary Target for Mac
     .binaryTarget(
       name: "CLiteRTLM_mac",
-      url: "https://github.com/google-ai-edge/LiteRT-LM/releases/download/v0.14.0/CLiteRTLM_mac.xcframework.zip",
-      checksum: "13e818c9d3987afa87f0716884ebf0b6b10677b480717b8b098146e6b4f45847"
+      url:
+        "https://github.com/google-ai-edge/LiteRT-LM/releases/download/v0.16.0/CLiteRTLM_mac.xcframework.zip",
+      checksum: "3ae6c876abd74614b1869bfc40cb4d0b892981363564740268b1f8ac5cf895a4"
     ),
     // The Swift Wrapper Target
     .target(
       name: "LiteRTLM",
       dependencies: [
         .target(name: "CLiteRTLM", condition: .when(platforms: [.iOS])),
-        .target(name: "CLiteRTLM_mac", condition: .when(platforms: [.macOS]))
+        .target(name: "CLiteRTLM_mac", condition: .when(platforms: [.macOS])),
       ],
       path: "swift",
       exclude: [
+        "apple_fm",
+        "device_tests",
         "CapabilitiesTests.swift",
         "EngineTests.swift",
+        "EmbeddingEngineTests.swift",
         "ConversationTests.swift",
         "ToolTests.swift",
         "MessageTests.swift",
         "BUILD",
         "Info.plist",
       ],
-      linkerSettings: [
-        .unsafeFlags(["-Xlinker", "-all_load"])
+    ),
+    // Apple Foundation Models Adapter
+    .target(
+      name: "LiteRTLMFoundationModels",
+      dependencies: ["LiteRTLM"],
+      path: "swift/apple_fm",
+      exclude: [
+        "BUILD",
+        "main.swift",
+        "AdapterTests.swift",
       ]
     ),
     // Separate test targets for each file to avoid naming conflicts:
@@ -85,6 +102,12 @@ let package = Package(
       dependencies: ["LiteRTLM"],
       path: "swift",
       sources: ["EngineTests.swift"]
+    ),
+    .testTarget(
+      name: "EmbeddingEngineTests",
+      dependencies: ["LiteRTLM"],
+      path: "swift",
+      sources: ["EmbeddingEngineTests.swift"]
     ),
     .testTarget(
       name: "MessageTests",

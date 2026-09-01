@@ -60,6 +60,7 @@ std::ostream& operator<<(std::ostream& os, const CpuConfig& config) {
   os << "kv_increment_size: " << config.kv_increment_size << "\n";
   os << "prefill_chunk_size: " << config.prefill_chunk_size << "\n";
   os << "number_of_threads: " << config.number_of_threads << "\n";
+  os << "enable_ynnpack: " << config.enable_ynnpack << "\n";
   return os;
 }
 
@@ -73,7 +74,6 @@ std::ostream& operator<<(std::ostream& os, const NpuConfig& config) {
   return os;
 }
 
-
 std::ostream& operator<<(std::ostream& os, const AdvancedSettings& settings) {
   os << "prefill_batch_sizes: ["
      << absl::StrJoin(settings.prefill_batch_sizes, ", ") << "]\n";
@@ -86,7 +86,10 @@ std::ostream& operator<<(std::ostream& os, const AdvancedSettings& settings) {
      << settings.num_logits_to_print_after_decode << "\n";
   os << "gpu_madvise_original_shared_tensors: "
      << settings.gpu_madvise_original_shared_tensors << "\n";
+  os << "gpu_enable_metal_residency_set: "
+     << settings.gpu_enable_metal_residency_set << "\n";
   os << "is_benchmark: " << settings.is_benchmark << "\n";
+  os << "enable_profiling: " << settings.enable_profiling << "\n";
   os << "preferred_device_substr: " << settings.preferred_device_substr << "\n";
   os << "num_threads_to_upload: " << settings.num_threads_to_upload << "\n";
   os << "num_threads_to_compile: " << settings.num_threads_to_compile << "\n";
@@ -127,6 +130,8 @@ std::ostream& operator<<(std::ostream& os, const AdvancedSettings& settings) {
   } else {
     os << "hint_kernel_batch_size: Not set\n";
   }
+  os << "error_on_invalid_sampled_token_id: "
+     << settings.error_on_invalid_sampled_token_id << "\n";
   return os;
 }
 
@@ -141,6 +146,7 @@ std::ostream& operator<<(std::ostream& os, const LlmExecutorSettings& config) {
   os << "activation_data_type: " << config.GetActivationDataType() << "\n";
   os << "max_num_images: " << config.GetMaxNumImages() << "\n";
   os << "lora_rank: " << config.GetLoraRank() << "\n";
+  os << "pad_token_id: " << config.GetPadTokenId() << "\n";
   os << "cache_dir: " << config.GetCacheDir() << "\n";
   if (config.GetScopedCacheFile()) {
     os << "cache_file: " << config.GetScopedCacheFile()->file() << "\n";
@@ -175,8 +181,8 @@ absl::StatusOr<LlmExecutorSettings> LlmExecutorSettings::CreateDefault(
     settings.SetBackendConfig(config);
   } else if (backend == Backend::GPU) {
     GpuConfig config;
-    // Default max top k to 1 for GPU.
-    config.max_top_k = 1;
+    // Default max top k to 64 for GPU.
+    config.max_top_k = 64;
     settings.SetBackendConfig(config);
   } else if (backend == Backend::NPU) {
     settings.SetBackendConfig(NpuConfig());

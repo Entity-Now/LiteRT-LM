@@ -19,6 +19,8 @@ package(
     default_visibility = ["//kotlin:__subpackages__"],
 )
 
+exports_files(["litertlm.cc"])
+
 cc_binary(
     name = "litertlm_jni",
     srcs = ["litertlm.cc"],
@@ -26,6 +28,7 @@ cc_binary(
     deps = [
         "@com_google_absl//absl/base:log_severity",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/log:globals",
@@ -36,8 +39,14 @@ cc_binary(
         "@nlohmann_json//:json",
         "@litert//litert/c/internal:litert_logging",
         "@litert//litert/cc/internal:scoped_file",
+        "//c:capabilities_headers",
+        "//c:engine",
         "//runtime/components:model_resources",
         "//runtime/components:prompt_template",
+        "//runtime/components/constrained_decoding:llg_constraint_config",
+        "//runtime/components/constrained_decoding:no_repeat_ngram_config",
+        "//runtime/components/constrained_decoding:repetition_penalty_config",
+        "//runtime/components/constrained_decoding:suppress_tokens_config",
         "//runtime/conversation",
         "//runtime/conversation:io_types",
         "//runtime/conversation:thinking_config",
@@ -52,9 +61,8 @@ cc_binary(
         "//runtime/proto:sampler_params_cc_proto",
         "//runtime/util:file_util",
         "//runtime/util:litert_lm_loader",
+        "//runtime/util:litert_util",
         "//runtime/util:logging",
-        "//runtime/util:scoped_file",
-        "//schema/capabilities:capabilities_c",
         "//schema/core:litertlm_header_schema",
         "@litert//tflite:minimal_logging",
     ] + select({
@@ -63,6 +71,13 @@ cc_binary(
             "@rules_java//toolchains:jni"
         ],
     }) + [
+        "@litert//litert/cc:litert_environment",
+        "//runtime/components:model_resources_litert_lm",
+        "//runtime/core:embedding_engine_impl",  # buildcleaner: keep
         "//runtime/core:engine_impl",  # buildcleaner: keep
+        "//runtime/engine:embedding_engine",
+        "//runtime/engine:embedding_engine_settings",
+        "//support/preprocessor:image_preprocessor",
+        "//support/preprocessor:image_preprocessor_impl",  # buildcleaner: keep
     ],
 )

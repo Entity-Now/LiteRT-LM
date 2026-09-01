@@ -39,14 +39,16 @@ Note: The build method uses `seek` to write the header and sections. The io
 interface used must support `seek`.
 """
 
+import contextlib
 import dataclasses
 import datetime
 import enum
 import io
+import logging
 import os
 import pathlib
 import shutil
-from typing import Any, BinaryIO, Callable, Optional, TypeVar
+from typing import Any, BinaryIO, Callable, Optional, TypeVar, cast
 import uuid
 import zlib
 
@@ -60,6 +62,8 @@ import tomli as tomllib
 from litert_lm_builder import litertlm_core
 from litert_lm_builder import litertlm_header_schema_py_generated as schema
 from litert_lm_builder import litertlm_peek
+from runtime.proto import embedding_metadata_pb2
+from runtime.proto import executor_metadata_pb2
 from runtime.proto import llm_metadata_pb2
 
 
@@ -229,12 +233,30 @@ class TfLiteModelType(enum.Enum):
   ARTISAN_TEXT_DECODER = "tf_lite_artisan_text_decoder"
   MTP_DRAFTER = "tf_lite_mtp_drafter"
   MTP_AUX = "tf_lite_mtp_aux"
+  TEXT_ENCODER = "tf_lite_text_encoder"
 
   @classmethod
   def get_enum_from_tf_free_value(cls, tf_free_value: str) -> "TfLiteModelType":
-    """A helper method to get the enum value from the TF-free value."""
-    value = "tf_lite_" + tf_free_value.lower()
+    """A helper method to get the enum value from a TF-free or prefixed value."""
+    tf_free_value_lower = tf_free_value.lower()
+    if tf_free_value_lower.startswith("tf_lite_"):
+      # For handling old models. All new models should use the TF-free format.
+      logging.warning(
+          "Input '%s' already starts with 'tf_lite_'.", tf_free_value
+      )
+      value = tf_free_value_lower
+    else:
+      value = "tf_lite_" + tf_free_value_lower
     return cls(value)
+
+
+@dataclasses.dataclass(frozen=True)
+class ExternalizationSummary:
+  """Summary of an opt-in LiteRT-LM weight externalization pass."""
+
+  models_inspected: int
+  models_with_external_weights: int
+  newly_externalized_bytes: int
 
 
 @enum.unique
@@ -255,6 +277,8 @@ class _SectionObject:
   data_type: schema.AnySectionDataType | int
   # The data writer for the section. This should write the data to stream.
   data_writer: Callable[[BinaryIO], None]
+  # Source path for sections that can be transformed during packaging.
+  source_path: str | None = None
 
 
 LitertLmFileBuilderT = TypeVar(
@@ -293,11 +317,16 @@ class LitertLmFileBuilder:
     self._system_metadata: list[Metadata] = []
     self._sections: list[_SectionObject] = []
     self._has_llm_metadata = False
+    self._has_executor_metadata = False
+    self._has_embedding_metadata = False
     self._has_tokenizer = False
 
   @classmethod
   def from_toml_str(
-      cls, toml_str: str, parent_dir: str | None = None
+      cls,
+      toml_str: str,
+      parent_dir: str | None = None,
+      jinja_prompt_template_path: str | None = None,
   ) -> LitertLmFileBuilderT:
     """Initializes a LitertLmFileBuilder from a loaded TOML string.
 
@@ -305,6 +334,8 @@ class LitertLmFileBuilder:
       toml_str: The TOML string to parse.
       parent_dir: The parent directory of the TOML file. If provided, it will be
         used to resolve the relative paths in the TOML file.
+      jinja_prompt_template_path: Optional path to a Jinja template file to
+        overwrite jinja_prompt_template.
 
     Returns:
       The LitertLmFileBuilder object.
@@ -351,6 +382,17 @@ class LitertLmFileBuilder:
 
         if section["section_type"] == "LlmMetadata":
           builder.add_llm_metadata(
+              _resolve_path(section["data_path"], parent_dir),
+              additional_metadata=additional_metadata,
+              jinja_prompt_template_path=jinja_prompt_template_path,
+          )
+        elif section["section_type"] == "ExecutorMetadata":
+          builder.add_executor_metadata(
+              _resolve_path(section["data_path"], parent_dir),
+              additional_metadata=additional_metadata,
+          )
+        elif section["section_type"] == "EmbeddingMetadata":
+          builder.add_embedding_metadata(
               _resolve_path(section["data_path"], parent_dir),
               additional_metadata=additional_metadata,
           )
@@ -400,28 +442,51 @@ class LitertLmFileBuilder:
               f"Unexpected section type: {section['section_type']}"
           )
 
-    return builder
+    if jinja_prompt_template_path is not None and not builder._has_llm_metadata:
+      raise ValueError(
+          "Cannot apply chat template: TOML configuration does not contain an"
+          " LlmMetadata section."
+      )
+
+    return builder  # pyrefly: ignore[bad-return]
 
   @classmethod
-  def from_toml_file(cls, toml_path: str) -> LitertLmFileBuilderT:
+  def from_toml_file(
+      cls, toml_path: str, jinja_prompt_template_path: str | None = None
+  ) -> LitertLmFileBuilderT:
     """Initializes a LitertLmFileBuilder from a TOML file."""
     with litertlm_core.open_file(toml_path, "r") as f:
       parent_path = pathlib.Path(toml_path).parent.as_posix()
-      return cls.from_toml_str(f.read(), parent_path)
+      return cls.from_toml_str(
+          f.read(),
+          parent_path,
+          jinja_prompt_template_path=jinja_prompt_template_path,
+      )
 
   @classmethod
-  def unpack(cls, litertlm_path: str, output_dir: str) -> LitertLmFileBuilderT:
+  def unpack(
+      cls,
+      litertlm_path: str,
+      output_dir: str,
+      jinja_prompt_template_path: str | None = None,
+  ) -> LitertLmFileBuilderT:
     """Unpacks a LiteRT-LM file into output_dir and returns a LitertLmFileBuilder initialized from the unpacked model.toml.
 
     Args:
       litertlm_path: The path to the LiteRT-LM file to unpack.
       output_dir: The directory where unpacked files and model.toml will be
         saved.
+      jinja_prompt_template_path: Optional path where jinja_prompt_template will
+        be unpacked.
 
     Returns:
       The LitertLmFileBuilder object initialized from the unpacked model.toml.
     """
-    toml_path = unpack(litertlm_path, output_dir)
+    toml_path = unpack(
+        litertlm_path,
+        output_dir,
+        jinja_prompt_template_path=jinja_prompt_template_path,
+    )
     return cls.from_toml_file(toml_path)
 
   def add_system_metadata(
@@ -435,12 +500,13 @@ class LitertLmFileBuilder:
             f"System metadata already exists for key: {metadata.key}"
         )
     self._system_metadata.append(metadata)
-    return self
+    return self  # pyrefly: ignore[bad-return]
 
   def add_llm_metadata(
       self,
       llm_metadata_path: str,
       additional_metadata: Optional[list[Metadata]] = None,
+      jinja_prompt_template_path: Optional[str] = None,
   ) -> LitertLmFileBuilderT:
     """Adds llm metadata to the litertlm file.
 
@@ -448,12 +514,15 @@ class LitertLmFileBuilder:
       llm_metadata_path: The path to the llm metadata file. Can be binary or
         textproto format.
       additional_metadata: Additional metadata to add to the llm metadata.
+      jinja_prompt_template_path: Optional path to a Jinja file to overwrite
+        jinja_prompt_template.
 
     Returns:
       The currentLitertLmFileBuilder object.
 
     Raises:
-      FileNotFoundError: If the llm metadata file is not found.
+      FileNotFoundError: If the llm metadata file or jinja template file is not
+        found.
     """
     assert not self._has_llm_metadata, "Llm metadata already added."
     self._has_llm_metadata = True
@@ -462,20 +531,39 @@ class LitertLmFileBuilder:
           f"Llm metadata file not found: {llm_metadata_path}"
       )
 
+    if jinja_prompt_template_path and not litertlm_core.path_exists(
+        jinja_prompt_template_path
+    ):
+      raise FileNotFoundError(
+          f"Jinja template file not found: {jinja_prompt_template_path}"
+      )
+
     if _is_binary_proto(llm_metadata_path):
 
       def data_writer(stream: BinaryIO):
         with litertlm_core.open_file(llm_metadata_path, "rb") as f:
-          _copy_file_to_stream(f, stream)
+          if jinja_prompt_template_path:
+            msg = llm_metadata_pb2.LlmMetadata()
+            msg.ParseFromString(f.read())
+            with litertlm_core.open_file(
+                jinja_prompt_template_path, "r"
+            ) as f_jinja:
+              msg.jinja_prompt_template = f_jinja.read()
+            stream.write(msg.SerializeToString())
+          else:
+            _copy_file_to_stream(f, stream)
 
     else:
 
       def data_writer(stream: BinaryIO):
         with litertlm_core.open_file(llm_metadata_path, "r") as f:
-          data = text_format.Parse(
-              f.read(), llm_metadata_pb2.LlmMetadata()
-          ).SerializeToString()
-          stream.write(data)
+          msg = text_format.Parse(f.read(), llm_metadata_pb2.LlmMetadata())
+          if jinja_prompt_template_path:
+            with litertlm_core.open_file(
+                jinja_prompt_template_path, "r"
+            ) as f_jinja:
+              msg.jinja_prompt_template = f_jinja.read()
+          stream.write(msg.SerializeToString())
 
     section_object = _SectionObject(
         metadata=additional_metadata if additional_metadata else [],
@@ -483,7 +571,108 @@ class LitertLmFileBuilder:
         data_writer=data_writer,
     )
     self._sections.append(section_object)
-    return self
+    return self  # pyrefly: ignore[bad-return]
+
+  def add_executor_metadata(
+      self,
+      executor_metadata_path: str,
+      additional_metadata: Optional[list[Metadata]] = None,
+  ) -> LitertLmFileBuilderT:
+    """Adds executor metadata to the litertlm file.
+
+    Args:
+      executor_metadata_path: The path to the executor metadata file. Can be
+        binary or textproto format.
+      additional_metadata: Additional metadata to add to the executor metadata.
+
+    Returns:
+      The current LitertLmFileBuilder object.
+
+    Raises:
+      FileNotFoundError: If the executor metadata file is not found.
+    """
+    assert not self._has_executor_metadata, "Executor metadata already added."
+    self._has_executor_metadata = True
+    if not litertlm_core.path_exists(executor_metadata_path):
+      raise FileNotFoundError(
+          f"Executor metadata file not found: {executor_metadata_path}"
+      )
+
+    if _is_binary_proto(
+        executor_metadata_path, executor_metadata_pb2.ExecutorMetadata
+    ):
+
+      def data_writer(stream: BinaryIO):
+        with litertlm_core.open_file(executor_metadata_path, "rb") as f:
+          _copy_file_to_stream(f, stream)
+
+    else:
+
+      def data_writer(stream: BinaryIO):
+        with litertlm_core.open_file(executor_metadata_path, "r") as f:
+          data = text_format.Parse(
+              f.read(), executor_metadata_pb2.ExecutorMetadata()
+          ).SerializeToString()
+          stream.write(data)
+
+    section_object = _SectionObject(
+        metadata=additional_metadata if additional_metadata else [],
+        data_type=schema.AnySectionDataType.ExecutorMetadataProto,
+        data_writer=data_writer,
+    )
+    self._sections.append(section_object)
+    return self  # pyrefly: ignore[bad-return]
+
+  def add_embedding_metadata(
+      self,
+      embedding_metadata_path: str,
+      additional_metadata: Optional[list[Metadata]] = None,
+  ) -> LitertLmFileBuilderT:
+    """Adds embedding metadata to the litertlm file.
+
+    Args:
+      embedding_metadata_path: The path to the embedding metadata file. Can be
+        binary or textproto format.
+      additional_metadata: Additional metadata to add to the embedding metadata.
+
+    Returns:
+      The current LitertLmFileBuilder object.
+
+    Raises:
+      FileNotFoundError: If the embedding metadata file is not found.
+    """
+    assert not self._has_embedding_metadata, "Embedding metadata already added."
+    self._has_embedding_metadata = True
+    if not litertlm_core.path_exists(embedding_metadata_path):
+      raise FileNotFoundError(
+          f"Embedding metadata file not found: {embedding_metadata_path}"
+      )
+
+    if _is_binary_proto(
+        embedding_metadata_path,
+        embedding_metadata_pb2.EmbeddingMetadata,
+    ):
+
+      def data_writer(stream: BinaryIO):
+        with litertlm_core.open_file(embedding_metadata_path, "rb") as f:
+          _copy_file_to_stream(f, stream)
+
+    else:
+
+      def data_writer(stream: BinaryIO):
+        with litertlm_core.open_file(embedding_metadata_path, "r") as f:
+          data = text_format.Parse(
+              f.read(), embedding_metadata_pb2.EmbeddingMetadata()
+          ).SerializeToString()
+          stream.write(data)
+
+    section_object = _SectionObject(
+        metadata=additional_metadata if additional_metadata else [],
+        data_type=schema.AnySectionDataType.EmbeddingMetadataProto,
+        data_writer=data_writer,
+    )
+    self._sections.append(section_object)
+    return self  # pyrefly: ignore[bad-return]
 
   def add_tflite_model(
       self,
@@ -500,10 +689,8 @@ class LitertLmFileBuilder:
       model_type: The type of the tflite model.
       backend_constraint: The backend constraint for the tflite model.
       prefer_activation_type: The preferred activation type for the tflite
-        model.
-        - fp16/float16 for float16 activation.
-        - fp32/float32 for float32 activation.
-        - fp32_fp16 for mixed activation.
+        model. - fp16/float16 for float16 activation. - fp32/float32 for float32
+        activation. - fp32_fp16 for mixed activation.
       additional_metadata: Additional metadata to add to the tflite model.
 
     Returns:
@@ -555,9 +742,10 @@ class LitertLmFileBuilder:
         metadata=metadata,
         data_type=schema.AnySectionDataType.TFLiteModel,
         data_writer=data_writer,
+        source_path=tflite_model_path,
     )
     self._sections.append(section_object)
-    return self
+    return self  # pyrefly: ignore[bad-return]
 
   def add_tflite_weights(
       self,
@@ -600,9 +788,10 @@ class LitertLmFileBuilder:
         metadata=metadata,
         data_type=schema.AnySectionDataType.TFLiteWeights,
         data_writer=data_writer,
+        source_path=tflite_weights_path,
     )
     self._sections.append(section_object)
-    return self
+    return self  # pyrefly: ignore[bad-return]
 
   def add_sentencepiece_tokenizer(
       self,
@@ -639,7 +828,7 @@ class LitertLmFileBuilder:
         data_writer=data_writer,
     )
     self._sections.append(section_object)
-    return self
+    return self  # pyrefly: ignore[bad-return]
 
   def add_hf_tokenizer(
       self,
@@ -685,7 +874,7 @@ class LitertLmFileBuilder:
         data_writer=write_and_compress,
     )
     self._sections.append(section_object)
-    return self
+    return self  # pyrefly: ignore[bad-return]
 
   def add_generic_binary_data(
       self,
@@ -720,10 +909,25 @@ class LitertLmFileBuilder:
         data_writer=data_writer,
     )
     self._sections.append(section_object)
-    return self
+    return self  # pyrefly: ignore[bad-return]
 
-  def build(self, stream: BinaryIO) -> None:
+  def build(
+      self,
+      stream: BinaryIO,
+  ) -> ExternalizationSummary | None:
     """Builds the litertlm into the given stream."""
+    self._build_sections(stream, self._sections)
+    return None
+
+  def _build_sections(
+      self, stream: BinaryIO, sections: list[_SectionObject]
+  ) -> None:
+    """Packs metadata and section data and writes the LiteRT-LM file.
+
+    Args:
+      stream: The binary output stream to write the LiteRT-LM file to.
+      sections: The section objects to serialize into the file.
+    """
     # Add UUID if not already present, but always generate a new timestamp.
     self._system_metadata = populate_system_metadata(self._system_metadata)
 
@@ -741,7 +945,7 @@ class LitertLmFileBuilder:
                 beginOffset=1,  # Use a non-zero (default value) placeholder.
                 endOffset=1,  # Use a non-zero (default value) placeholder
             )
-            for s in self._sections
+            for s in sections
         ]
     )
 
@@ -757,7 +961,7 @@ class LitertLmFileBuilder:
     offset = _round_up_to_block_size(
         litertlm_core.HEADER_BEGIN_BYTE_OFFSET + packed_metadata_size
     )
-    for section, section_fb in zip(self._sections, section_metadata.objects):
+    for section, section_fb in zip(sections, section_metadata.objects):  # pyrefly: ignore[bad-argument-type]
       stream.seek(offset)
       section_fb.beginOffset = offset
       section.data_writer(stream)
@@ -791,9 +995,7 @@ def _round_up_to_block_size(offset: int) -> int:
   )
 
 
-def _copy_file_to_stream(
-    f_src: Any, f_dst: BinaryIO, buffer_size=1024 * 1024
-):
+def _copy_file_to_stream(f_src: Any, f_dst: BinaryIO, buffer_size=1024 * 1024):
   """Copies data from f_src to f_dst efficiently."""
   # Try to use os.sendfile (zero-copy) if available.
   if hasattr(os, "sendfile"):
@@ -836,22 +1038,26 @@ def _validate_backend_constraints(backend_constraint: str) -> None:
       )
 
 
-def _is_binary_proto(filepath: str) -> bool:
-  """Checks if a file is a binary protobuf or a textproto version of LlmMetadata.
+def _is_binary_proto(
+    filepath: str,
+    message_type: Any = llm_metadata_pb2.LlmMetadata,
+) -> bool:  # pyrefly: ignore[bad-return]
+  """Checks if a file is a binary protobuf or a textproto.
 
   Args:
       filepath (str): The path to the file.
+      message_type: The protobuf message class to try parsing with.
 
   Returns:
       bool: True if the file is a binary protobuf, False if it's a textproto.
-      TextProto.
   """
   assert litertlm_core.path_exists(filepath), f"File {filepath} does not exist."
 
+  name = message_type().__class__.__name__
   try:
     with litertlm_core.open_file(filepath, "rb") as f:
       content = f.read()
-      msg = llm_metadata_pb2.LlmMetadata()
+      msg = message_type()
       msg.ParseFromString(content)
       if msg.IsInitialized():
         return True
@@ -863,12 +1069,12 @@ def _is_binary_proto(filepath: str) -> bool:
   try:
     with litertlm_core.open_file(filepath, "r") as f:
       content = f.read()
-      msg = text_format.Parse(content, llm_metadata_pb2.LlmMetadata())
+      msg = text_format.Parse(content, message_type())
       if msg.IsInitialized():
         return False
   except (text_format.ParseError, UnicodeDecodeError) as e:
     raise ValueError(
-        f"Failed to parse LlmMetadata from {filepath}. Exception: {e}"
+        f"Failed to parse {name} from {filepath}. Exception: {e}"
     ) from e
 
 
@@ -886,27 +1092,82 @@ def _resolve_path(path: str, parent_dir: str | None) -> str:
   if not is_abs and not parent_dir:
     raise ValueError("Parent directory is required for relative path.")
 
-  abs_path = path if is_abs else os.path.join(parent_dir, path)
+  abs_path = path if is_abs else os.path.join(parent_dir, path)  # pyrefly: ignore[no-matching-overload]
   if not litertlm_core.path_exists(abs_path):
     raise FileNotFoundError(f"File {abs_path} does not exist.")
   return abs_path
 
 
-def unpack(litertlm_path: str, output_dir: str) -> str:
-  """Unpacks a LiteRT-LM file into an output directory.
+def unpack(
+    litertlm_path: str,
+    output_dir: str,
+    jinja_prompt_template_path: str | None = None,
+) -> str:
+  """Unpacks a LiteRT-LM file into the specified directory.
 
   Args:
     litertlm_path: The path to the LiteRT-LM file to unpack.
     output_dir: The directory where the unpacked files and model.toml will be
       saved.
+    jinja_prompt_template_path: Optional path where jinja_prompt_template will
+      be saved.
 
   Returns:
     The path to the generated model.toml file.
   """
   litertlm_peek.peek_litertlm_file(
-      litertlm_path, dump_files_dir=output_dir, output_stream=io.StringIO()
+      litertlm_path,
+      dump_files_dir=output_dir,
+      output_stream=io.StringIO(),
+      jinja_prompt_template_path=jinja_prompt_template_path,
   )
   return os.path.join(output_dir, "model.toml")
 
 
 unpack_litertlm_file = unpack
+
+
+def pack_with_summary(
+    toml_path: str,
+    output_path: str,
+    jinja_prompt_template_path: str | None = None,
+) -> tuple[str, ExternalizationSummary | None]:
+  """Packs TOML and returns the output path and externalization summary."""
+  output_dir = os.path.dirname(output_path)
+  if output_dir:
+    os.makedirs(output_dir, exist_ok=True)
+  builder = LitertLmFileBuilder.from_toml_file(
+      toml_path, jinja_prompt_template_path=jinja_prompt_template_path
+  )
+  with litertlm_core.open_file(output_path, "wb") as f:
+    summary = builder.build(
+        cast(BinaryIO, f),
+    )
+  return output_path, summary
+
+
+def pack(
+    toml_path: str,
+    output_path: str,
+    jinja_prompt_template_path: str | None = None,
+) -> str:
+  """Packs a TOML configuration and its referenced files into a LiteRT-LM file.
+
+  Args:
+    toml_path: The path to the input TOML configuration file (e.g., model.toml).
+    output_path: The path where the packed LiteRT-LM file will be saved.
+    jinja_prompt_template_path: Optional path to a Jinja file to overwrite
+      jinja_prompt_template.
+
+  Returns:
+    The path to the generated LiteRT-LM file.
+  """
+  packed_path, _ = pack_with_summary(
+      toml_path,
+      output_path,
+      jinja_prompt_template_path,
+  )
+  return packed_path
+
+
+pack_litertlm_file = pack

@@ -16,6 +16,7 @@
 #define THIRD_PARTY_ODML_LITERT_LM_RUNTIME_ENGINE_ENGINE_H_
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "absl/base/attributes.h"  // from @com_google_absl
@@ -25,9 +26,9 @@
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/time/time.h"  // from @com_google_absl
-#include "support/tokenizer/tokenizer.h"  // from @litert
 #include "runtime/engine/engine_settings.h"
 #include "runtime/engine/io_types.h"
+#include "support/tokenizer/tokenizer.h"
 
 namespace litert::lm {
 
@@ -257,8 +258,11 @@ class SessionInterface {
   virtual absl::StatusOr<BenchmarkInfo*> GetMutableBenchmarkInfo() = 0;
 
   // Cancels the ongoing inference process. Note that if this function is
-  // called, the inference process will return with a kCancelled error. The
-  // session could still be used after afterwards.
+  // called, the inference process will return with a kCancelled error.
+  //
+  // NOTE: Reusing the session after calling CancelProcess() is neither
+  // recommended nor supported. Calling CancelProcess() leaves the session
+  // state poisoned, and subsequent operations may fail or behave incorrectly.
   virtual void CancelProcess() {
     ABSL_LOG(FATAL) << "CancelProcess is not implemented.";
   }
@@ -328,6 +332,12 @@ class SessionInterface {
 
   // Get the reference to the session config for the session.
   virtual const SessionConfig& GetSessionConfig() const = 0;
+
+  // Returns the debug info for the session, or nullopt if unsupported
+  // or debugger is disabled.
+  virtual std::optional<SessionDebugInfo> GetSessionDebugInfo() const {
+    return std::nullopt;
+  }
 };
 
 // EngineT is the templated interface for the LLM runtime.
@@ -373,6 +383,26 @@ class EngineT {
   // if the engine is created with vision modality enabled.
   virtual absl::StatusOr<VisionExecutorProperties> GetVisionExecutorProperties()
       const = 0;
+
+  // Updates whether to enable Metal residency set on GPU at runtime.
+  //
+  // To configure this setting during initialization, configure
+  // AdvancedSettings::gpu_enable_metal_residency_set in EngineSettings before
+  // creating the engine.
+  //
+  // When enabled on Apple platforms (macOS and iOS with Metal GPU backend),
+  // this uses Apple's MTLResidencySet API to ensure model weights and
+  // allocations remain resident in GPU memory, preventing memory swapping and
+  // reducing allocation overhead.
+  //
+  // This setting is only supported on Apple platforms (macOS / iOS) with the
+  // GPU backend. On other platforms (e.g. Linux, Android, Windows) or non-GPU
+  // backends, this setting has no effect and is safely ignored.
+  virtual absl::Status UpdateGpuEnableMetalResidencySet(
+      bool enable_metal_residency_set) {
+    return absl::UnimplementedError(
+        "UpdateGpuEnableMetalResidencySet not implemented.");
+  }
 
   // Default timeout duration for the engine/session processes.
   static constexpr absl::Duration kDefaultTimeout = absl::Minutes(10);
